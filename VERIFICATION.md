@@ -1,31 +1,36 @@
-# 验证记录
+# 完整重做验证记录
 
-日期：2026-11-03（Asia/Singapore）。macOS，Node.js v22.22.3。
+日期：2026-11-04（Asia/Singapore）。macOS，Node.js v22.22.3。
 
-## 实际验证
+## 内容与实现
+
+全部 13 章重新组织为具体问题、固定源码分支、实际行号注解、原创实现、执行顺序说明、独立实验、结果解释与动手验收。贯穿项目在 `host/src/`；`course/progression.json` 绑定阶段依赖、真实导出符号与实验。网页直接读取实现文件，证据清单记录文件 SHA256。
+
+固定 0.7.2 / `6e062ae8ca365db34b93a7cdc96ffda3a8b9fffc`，27 个源码定位与 39 处阅读注解均从 Git 对象核对。保留原始图标、工程地图、Canvas、原有 10 组源码实验与独立贡献任务。
+
+## 本机执行结果
 
 | 检查 | 结果 |
 | --- | --- |
-| 固定源码版本 | 0.7.2 / `6e062ae8ca365db34b93a7cdc96ffda3a8b9fffc`；读取 Git 对象 |
-| `npm run lab` | PASS，10 组：architecture、sdk、registry、usage、paths、checkpoint、generation、queue、turn、capstone |
-| `npm run check` | PASS，源码锚点、实验、页面和锚点 |
-| `npm run build` | PASS，18 页、13 章、23 个源码入口、13 道面试题 |
-| 全量本地资源检查 | 页面、资源、锚点无缺失 |
-| 浏览器逐章检查 | 13 章共 14 张 Mermaid 图全部渲染，无残留指令 |
-| SDK 回放 | 第六步识别重复 snapshot；最终 a completed、b incomplete；末步下一步禁用 |
-| 总装回放 | A aborted 后 busy 释放，R1 关闭，B 接纳；支持状态 JSON 查看 |
-| 长源码 | 可展开；长实验输出有独立滚动区域 |
-| JavaScript | `node --check site/static/app.js` PASS；播放器检查无 console warn/error |
+| 逐章独立实验（构建时重跑） | PASS，13 份、96 项断言 |
+| 原有 `labs/run.mjs` | PASS，10 组固定源码实验，构建同样运行 |
+| `npm run check`、`npm run build` | PASS，19 页、39 道面试题 |
+| 新实现、运行器、逐章实验语法 | `node --check` PASS，实际执行通过 |
+| 本地页面、资源与 fragment | 全量检查无缺失 |
+| 浏览器逐章检查 | 13/13 章都有实现、独立实验、执行路径说明和行号注解；14 张机制图全部渲染 |
+| 总装交互 | 代码展开、实验数据、逐步回放与事件 JSON 正常，console warn/error 为空 |
 | `git diff --check` | PASS |
 
-课程每章包含目标、具体推导、机制图、失败反例与练习。第 12 章总装实验组合三个真实上游组件，展示热更新、取消、收尾与迟到事件。
+`site/dist/course-evidence.json` 保存实际断言、观察数据和实现摘要。页面 PASS 来自子进程退出结果及报告检查，断言失败会中止构建。
 
-## 证据范围
+## 实验范围
 
-SDK、Prompt Registry、usage、路径、checkpoint、MCP generation 和 QueueService 执行审核过的完整上游模块；纯相对依赖从同一个 Git 提交装载，不 mock 内部实现。使用的存储、会话读取、时钟和 runtime.close 是明确测试端口。
+Prompt Registry、MCP generation 与 ItemAccumulator 直接装载固定上游完整模块及审核过的相对依赖。原有 usage、路径、checkpoint、queue 等源码实验保留独立端口说明。原创 host 实现 Session/Turn、日志、事件交付、工具和队列装配，其通过不能描述成生产宿主全量集成通过。
 
-turn 实验提取原始驱动函数，用 fake Agent 与错误分类端口控制输入。capstone 中的 host admission、busy 和事件归属由课程自己实现，并组合真实 PromptRegistry、GenerationRegistry、ItemAccumulator；不是生产 Session/Turn 服务的集成测试。播放器数据来自构建时运行结果，输入为合成事件。
+新实验使用确定性模型回复，但真实运行文件修改、Node 测试、长工具进程、stdio MCP、管道 CLI 与追加日志。第 12 章先启动 A 的长进程，发布 R2，取消并等待 A 收尾、释放 R1 与 busy；B 随后从队列接纳，使用新提示与 R2 完成 Skill、文件修复、真实测试与 MCP 调用。SDK 消费同一条实际事件流，报告保留文件、工具结果、队列与客户端状态。
 
-未构建完整上游 CLI，未验证 SQLite、真实 Provider、认证、真实 MCP 或所有平台。独立贡献任务以上游 contribution checkout 自己的验证报告为准。
+accepted 队列项重启后保留待协调，不盲目重试，不承诺 exactly-once。三个入口是共用应用的参数适配子集，不是完整 TUI/ACP 产品。没有运行真实 Provider、认证、SQLite 或全部平台；需要沙箱时拒绝无后端降级，平台可用性不能由路径检查代替。
 
-Mermaid 11.17.2 随网站本地分发并保留许可；Markdown 解析器固定 14.3.3。产品原始图标与来源记录保持一致。
+第 11 章使用课程故意错误的基线生成真实可校验 diff，结果是 local-evidence-only，不是新发现的上游缺陷或已提交 PR。独立贡献任务的状态以其真实记录为准。
+
+GitHub Actions 从干净 checkout 准备固定源码并运行完整构建。提交后的结果以对应 Actions run 为准。

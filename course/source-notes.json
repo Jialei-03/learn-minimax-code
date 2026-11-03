@@ -1,0 +1,212 @@
+{
+  "scope": [
+    {
+      "find": "# Source boundaries",
+      "note": "先用发行边界限制结论，不把公开 CLI 推广为完整 Desktop 或云服务。"
+    }
+  ],
+  "cli": [
+    {
+      "find": "export function createTuiProgram",
+      "note": "注册与 handler 注入在命令边界完成，继续沿注入函数追运行。"
+    }
+  ],
+  "bridge": [
+    {
+      "find": "export class CliService",
+      "note": "这是进程内门面；会话持久化和运行 owner 仍在下游服务。"
+    }
+  ],
+  "runner": [
+    {
+      "find": "const turn = newTurn",
+      "note": "每轮私有状态在这里创建，不能跨任务复用事件计数器。"
+    },
+    {
+      "find": "const agent = newAgent",
+      "note": "宿主材料装配完以后才创建内核 Agent。"
+    }
+  ],
+  "agent": [
+    {
+      "find": "initialState:",
+      "note": "历史与模型配置来自宿主，重新创建 Agent 不等于丢掉 Session。"
+    },
+    {
+      "find": "convertToLlm:",
+      "note": "请求投影与 canonical history 分开。"
+    }
+  ],
+  "budget": [
+    {
+      "find": "export function withLocalDynamicMaxTokens",
+      "note": "预算位于实际请求包装层，需要看到完整请求材料与重试身份。"
+    }
+  ],
+  "model-identity": [
+    {
+      "find": "raw.indexOf('/')",
+      "note": "只有第一个分隔符划出 Provider，其余 slash 属于模型 id。"
+    },
+    {
+      "find": "raw.slice(slash + 1)",
+      "note": "保留完整模型后缀，避免命名空间被截断。"
+    }
+  ],
+  "tool-hooks": [
+    {
+      "find": "const sourceByToolName",
+      "note": "Hook 消费工具来源，不能只按一个可能冲突的名字授权。"
+    }
+  ],
+  "memory": [
+    {
+      "find": "export function buildMemoryTailBlock",
+      "note": "记忆如何变成提示文字，是独立的请求投影职责。"
+    }
+  ],
+  "registry": [
+    {
+      "find": "this.entries.size + this.reservations.size",
+      "note": "还没填值的预留同样占容量，避免准备工作无限堆积。"
+    },
+    {
+      "find": "this.reservations.delete(turnId)",
+      "note": "remember 必须消费真实预留，不能无条件注入 scope。"
+    }
+  ],
+  "checkpoint": [
+    {
+      "find": "export function parseCheckpointHeadings",
+      "note": "提示与校验从同一协议取标题，避免维护两份相互漂移的清单。"
+    }
+  ],
+  "permission": [
+    {
+      "find": "const immune",
+      "note": "窄的硬边界先检查；结构化 denyKind 决定后续解释。"
+    },
+    {
+      "find": "const policy",
+      "note": "策略级检查与 bypass-immune 不是同一效力。"
+    }
+  ],
+  "paths": [
+    {
+      "find": "export function isTuiAcpAbsolutePath",
+      "note": "该函数只分类语法，不解析物理路径，也不授予访问许可。"
+    }
+  ],
+  "skills": [
+    {
+      "find": "export function parseSkillFrontmatter",
+      "note": "包内容在读入边界验证；格式错误不能拖到模型调用才暴露。"
+    }
+  ],
+  "mcp-generation": [
+    {
+      "find": "generation.leaseCount += 1",
+      "note": "每个快照使用者持有明确责任，结束时必须对应释放。"
+    },
+    {
+      "find": "prior.retired = true",
+      "note": "替换先退休旧代；是否关闭仍取决于剩余租约。"
+    }
+  ],
+  "queue": [
+    {
+      "find": "export class QueueService",
+      "note": "服务门面负责边界与错误映射，事务提交由 store 拥有。"
+    }
+  ],
+  "sdk": [
+    {
+      "find": "const snapshot =",
+      "note": "delta 是操作，snapshot 是状态；只有后者参与相同内容去重。"
+    },
+    {
+      "find": "state.text +=",
+      "note": "相同 delta 也要追加，否则 haha 会被错误变成 ha。"
+    }
+  ],
+  "usage": [
+    {
+      "find": "export class SessionUsageService",
+      "note": "查询边界先验证输入，再进入存储；这不证明 ledger 写入归因正确。"
+    }
+  ],
+  "contributing": [
+    {
+      "find": "# Contributing",
+      "note": "本地可审查材料与外部贡献资格分开；发送前重新核对当前政策。"
+    }
+  ],
+  "runner-finalize": [
+    {
+      "find": "await events.drain()",
+      "note": "等待已入队交付结束，终态不能越过前面的事实。"
+    },
+    {
+      "find": "await history.flushTail()",
+      "note": "补交历史尾部以后才选择和提交最终终态。"
+    }
+  ],
+  "tool-wrapper": [
+    {
+      "find": "async execute(",
+      "note": "为每次调用构造上下文，id 必须随实际效果传下去。"
+    },
+    {
+      "find": "observer?.onResult(result)",
+      "note": "程序观察者先看原始结果，随后才投影给内核与模型。"
+    }
+  ],
+  "outbound-projection": [
+    {
+      "find": "export function projectAgentMessagesForModel",
+      "note": "保留 canonical facts，为当前 Provider 创建独立请求视图。"
+    }
+  ],
+  "queue-contract": [
+    {
+      "find": "readonly facts:",
+      "note": "返回值和已提交事实必须一起交给上层发布，不提前发预期事件。"
+    }
+  ],
+  "history-cursor": [
+    {
+      "find": "let lastSnapshotLength",
+      "note": "调用方已有历史不重复交付，游标从初始长度开始。"
+    },
+    {
+      "find": "deliveryFailed = true",
+      "note": "持久化失败成为稳定状态，不能推进游标掩盖丢失。"
+    }
+  ],
+  "event-delivery": [
+    {
+      "find": "turn.bridge.emitTerminal",
+      "note": "桥接失败与 writer 交付失败分开归因。"
+    },
+    {
+      "find": "await flushEvents",
+      "note": "终态本身也需要等待可失败的交付。"
+    }
+  ],
+  "queue-acceptance": [
+    {
+      "find": "export interface QueueClaimAcceptanceQuery",
+      "note": "恢复需要检查 claim 是否已被持久接纳，不能凭进程内 busy 推断。"
+    }
+  ],
+  "sdk-projection": [
+    {
+      "find": "state.completed ?",
+      "note": "只有 completed 去掉 incomplete，EOF 本身不代表完成。"
+    },
+    {
+      "find": "default:",
+      "note": "未知类型不强行转换为已知 ThreadItem，保持流与聚合视图边界。"
+    }
+  ]
+}

@@ -1,38 +1,30 @@
-## SDK 把一个长生命周期交给调用者
+## 本章的问题
 
-TypeScript SDK 不只是包一层 HTTP 请求。公开 `packages/code-sdk` 启动 CLI 子进程，读取事件流，归并 items，再把运行结果交给应用。进程发现、启动参数、取消、超时、错误映射和事件完整性都属于契约的一部分。
+a 收到 ha，b 收到 other，a 又收到 ha。把所有文本拼在一起会混淆 item；按内容去重又会把合法的 haha 变成 ha。delta 是追加操作，snapshot 是当前状态，两者不能共用一种去重规则。
 
-先读该包 README，然后依次看 `cli-resolver.ts`、`exec-process.ts`、`thread.ts` 和 `items.ts`。SDK 的 Thread 与内部 Session/Turn 需要有明确映射，但不应仅凭术语相同就把它们视为同一对象。
+host 先校验 turnId 与递增 seq，再把 item 事件交给真实 ItemAccumulator。完全相同的传输帧可以幂等丢弃；跳号或同号异内容必须暴露，而不是悄悄拼出看似完整的答案。
 
-## 增量和快照，不能用同一种去重
-
-模型先输出 `ha`，又输出 `ha`，最终应得到 `haha`。两个 delta 文本相同，仍表示两次新增。相反，同一 item 的完整快照被重复发送，通常不应重复通知消费者或累加文本。
+## 沿固定源码逐段拆解
 
 @source sdk
 
-`ItemAccumulator` 按 item id 保存状态；带 `contentDelta` 时追加，带 `content` 时替换。重复的 `item.updated` 快照可以被过滤，delta 不做这种去重。不同 id 的事件即使交错，也分别进入自己的状态。
+### ItemAccumulator 的 Map 以 id 拥有状态
 
-@lab sdk
+第一次看到 id 时创建 ItemState，记录 type、text、toolCall、completed 和 snapshot。不同 item 可以交错，items 仍按首次出现顺序输出。未知类型可以留在流上，却不会强行变成已知 ThreadItem。
 
-实验输入两个 item 的交错事件。a 收到两个相同 delta 后文本为 `haha`，再收到相同快照不会重复发出；a 收到 completed 后完整，b 没有 completed 所以保留 `incomplete: true`。
+### 去重条件只覆盖重复 snapshot updated
 
-这直接执行上游完整实现；输入是合成事件。没有启动真实 CLI，也没有测 SDK 的子进程、timeout 或模型服务，不能把结果说成“SDK 所有功能通过”。
+没有 contentDelta 时才序列化 snapshot；只有相同 updated、已有状态且尚未 completed 才返回 false。delta 从不按字符串去重。若同时有 delta 与 content，源码先追加，再用完整 content 覆盖。
 
-## incomplete 是面向调用者的事实
+@source sdk-projection
 
-如果进程断开之前只收到一部分文字，SDK 可以保存已有内容，同时说明它未完成。把“暂时有输出”和“正式完成”区分开，调用者才知道能否把它作为最终答案、自动执行下一步或记录成功。
+### item 完成与任务完成各有状态
 
-还要检查 unknown item type。源码只把已知 type 转成稳定 ThreadItem，未知类型留在 stream。这样协议扩展不会被错误映射成某个旧类型。
+item.completed 去掉该 item 的 incomplete；它不代表整个 Turn 成功。EOF 到来时尚未完成的 item 必须保留 incomplete。host 再用 turn.completed 维护整体终态，不能用“收到一点文字”替代成功。
 
-## 为什么 SDK 问题适合开源贡献
+EventStore 保存可重放帧。客户端去重是传输恢复的一部分，不等于外部工具效果具备 exactly-once。
 
-很多边界不需要收费模型：可以用 fake CLI 产生分片 JSON、重复快照、异常退出和取消。这让复现便宜且确定。但不要重复别人已有补丁；例如调查日的 Python SDK PR #585 已覆盖多项生命周期问题，选题时应先读完整讨论。
-
-## 流式消息不能简单拼接成一个字符串
-
-同一轮会同时出现 reasoning、agent_message 与 tool_call；不同 item 的事件可以交错。若把所有文本追加进一个 buffer，用户会看到推理混入答案、工具内容错位；若按到达次序创建最终数组，又会被重复 snapshot 干扰。
-
-ItemAccumulator 的状态是 Map<id, ItemState>：第一次见到 id 时确定它的位置，之后更新同一条。items() 按首次出现顺序生成最终结果，并对尚未 completed 的条目标 incomplete。未知 item 类型可以继续作为流事件，但不会被强行转换成已知 ThreadItem。
+## 机制总览
 
 ```mermaid
 flowchart TD
@@ -47,28 +39,44 @@ flowchart TD
   C --> O[投影 ThreadItem 与 incomplete]
 ```
 
-## 两个 ha 应该变成 haha
+## 接入贯穿项目
 
-delta 是操作：再追加一段文字。两个相同的 delta 可以是合法重复词，不能因为字符串相等就丢掉一个。snapshot 是状态：现在完整内容就是某个值。完全相同的 updated snapshot 才可能被视为重复通知。
+@implementation 10-sdk-events
 
-还有一个细节：源码先追加 contentDelta，再用存在的 content 覆盖 text。若事件同时携带二者，应按真实代码顺序推导结果，不能假设协议一定不会出现。这正适合写一个边界用例。
+### 逐步跟踪本章实现
 
-## 用七个事件推一遍状态
+collector 先检查 turnId，再检查连续 seq。其他 Turn 的帧不会改动本次状态；紧邻的同 seq 同 hash 重放被忽略，序号跳跃、同序不同内容或终态后继续到达则报错。这个包装只处理明确的连续交付规则，不承诺任意历史段重放的 exactly-once。
 
-初始 a started；a 收到 ha；b 收到完整 other；a 再收到 ha；a 收到完整 haha；再次收到同一个 snapshot；最后 a completed。每一步都应写出 a/b 文本、完成状态和 apply 返回值。
+通过归属与序号检查后，帧交给固定上游 ItemAccumulator。delta 是追加片段，完成帧的 content 是完整结果；把完成快照再次当作 delta 追加会重复文本。Turn 终态与 item 终态也要分开：任务取消时已经开始的 item 仍可能 incomplete。
 
-@replay sdk
+本章最后 spawn 真正的 host CLI，经 stdin 写请求、读取 JSONL 并结束输入，检查子进程退出。对象级归并测试说明状态转换，CLI 测试说明这些转换确实从管道边界交给了客户端；两层合在一起才能覆盖嵌入程序的使用路径。
 
-这个播放器的每一步来自构建时执行真实 ItemAccumulator，输入事件为课程合成。它展示函数状态变化，没有伪装成实时 CLI 录制。点击下一步时，注意第六步被判重复，最后 a 不再 incomplete，b 仍 incomplete。
+## 运行本章实验
 
-## EOF 并不等于全部成功
+```bash
+node --disable-warning=ExperimentalWarning labs/chapters/10-sdk-events.mjs
+```
 
-如果进程异常退出或协议被截断，客户端仍可能已经收到一部分文字。把不完整 item 标出来，调用方才能区分“得到了部分输出”和“工作正常结束”。最终 task/result 终态与 item.completed 也不应混用：一个 item 完成，并不自动说明整轮成功。
+@experiment 10-sdk-events
 
-## 练习：把归并规则变成自己的断言
+## 逐项解释实验结果
 
-增加未知类型、只有 completed、重复 completed、同时有 content 和 delta、以及两个 tool_call 交错的事件。对每条断言 apply 的返回值与 items() 的结果。再问哪些协议错误应由上游验证器拒绝；Accumulator 的容错行为不等于所有这样的事件都属于合法协议。
+实验输入交错 item、重复传输帧、重复 snapshot 和相同 delta。最终 a 是 haha 且完成，b 仍 incomplete。错误 Turn 被拒绝；新 collector 直接收到 seq=2 会报错，暴露丢失事件。
 
-::: interview 为什么流式 SDK 应同时提供 events 和最终 items？
-events 适合即时渲染与进度，items 适合结束后的结构化消费。归并必须按 id 处理交错，区分 delta 与 snapshot，并保存 incomplete。两种接口共享同一套状态语义，才能避免实时 UI 与最终结果互相矛盾。
+第 12 章会让同一个 collector 消费真实 host 运行帧，验证这个局部归并器确实接在产品主线上。
+
+## 继续动手与验收
+
+构造重复 completed、未知 item 类型和同 seq 异内容。设计重连协议时，说明请求从哪个 seq 重放，以及何时可以向用户报告结果完整。
+
+::: interview 重复 delta 为什么不能按内容去重？
+先按 turnId 与连续 seq 验证归属和交付，再让 accumulator 归并 item。delta 与完整快照的处理不同；取消后的未完成 item 也不能伪装完成。CLI 子进程验证这些状态确实经过了管道边界。
+:::
+
+::: interview 收到 EOF 可以把所有 item 标 completed 吗？
+不能。进程可能中断，已经收到的部分输出仍有价值，但必须保留 incomplete。item 完成和整体 Turn 终态也要分别判断。
+:::
+
+::: interview 为什么遇到序号缺口要暴露而不是继续拼？
+缺帧可能丢失调用、结果或终态。继续拼会生成看似完整却不可信的结果；应按重放游标恢复，或明确报告 incomplete。
 :::

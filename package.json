@@ -13,7 +13,10 @@
     "check": "node --disable-warning=ExperimentalWarning site/build.mjs --check",
     "build": "node --disable-warning=ExperimentalWarning site/build.mjs",
     "serve": "node site/serve.mjs",
-    "map:generate": "node scripts/engineering-map.mjs --write"
+    "map:generate": "node scripts/engineering-map.mjs --write",
+    "lesson": "node scripts/verify-course.mjs",
+    "verify:course": "node scripts/verify-course.mjs",
+    "demo": "node host/src/cli.mjs"
   },
   "devDependencies": {
     "markdown-it": "14.3.3",

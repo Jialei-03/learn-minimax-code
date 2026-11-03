@@ -464,3 +464,14 @@ figure:hover .copy, .copy:focus-visible, .copy.done { opacity: 1; }
 .src.lab pre.shiki { max-height: 480px; overflow: auto; }
 
 .tp-btn.primary:hover:not(:disabled) { color: var(--bg); background: var(--ink-2); border-color: var(--ink-2); }
+
+.implementation-stage { padding: 22px 24px; margin: 2em 0; border: 1px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+.implementation-stage h3 { margin-top: 0; }
+.chapter-experiment { margin: 2em 0; }
+.chapter-experiment details > pre { max-height: 540px; overflow: auto; }
+.progression section { border-left: 2px solid var(--line-2); padding: 4px 0 20px 22px; margin-bottom: 20px; }
+.progression h2 { margin: 10px 0; }
+
+.source-reading { list-style: none; padding: 0; border-left: 2px solid var(--line-2); margin: 18px 0 30px; }
+.source-reading li { display: grid; grid-template-columns: 52px 1fr; gap: 12px; padding: 9px 16px; font-size: 14px; }
+.source-reading a { font-family: var(--mono); }

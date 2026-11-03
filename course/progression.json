@@ -1,0 +1,181 @@
+{
+  "name": "host",
+  "repo": "https://github.com/Jialei-03/learn-minimax-code",
+  "description": "十三步建立一个产品运行时，把接纳、持久队列、事件、快照、插件和 SDK 放进同一条真实实验链。",
+  "chapters": [
+    {
+      "n": 0,
+      "slug": "00-method",
+      "title": "方法：从源码到可验证的产品宿主",
+      "dependsOn": null,
+      "implementation": [
+        "runtime/files.mjs#workspacePath",
+        "runtime/journal.mjs#Journal"
+      ],
+      "experiment": "labs/chapters/00-method.mjs",
+      "build": "为 host 建立版本、路径与持久事实基础",
+      "connection": "确定研究对象和证据层级，为后面的 Session、Turn、工具和连接建立同一套可复查的运行环境。"
+    },
+    {
+      "n": 1,
+      "slug": "01-architecture",
+      "title": "入口与状态：三个适配器，一个应用",
+      "dependsOn": "00-method",
+      "implementation": [
+        "host/src/adapters.mjs#adapters",
+        "host/src/sessions.mjs#Sessions"
+      ],
+      "experiment": "labs/chapters/01-architecture.mjs",
+      "build": "让 TUI、exec 与 ACP 共用会话 owner",
+      "connection": "复用第 0 章的日志和工作区契约，建立会话与接纳门面，后面所有运行都通过它。"
+    },
+    {
+      "n": 2,
+      "slug": "02-turn",
+      "title": "Turn：装配、交付与终态顺序",
+      "dependsOn": "01-architecture",
+      "implementation": [
+        "host/src/events.mjs#SerialDelivery",
+        "host/src/turns.mjs#runTurn"
+      ],
+      "experiment": "labs/chapters/02-turn.mjs",
+      "build": "实现每次运行独有的执行与收尾",
+      "connection": "在共享会话之上建立 Turn 私有状态，把模型、工具、历史和事件队列接在同一条生命周期内。"
+    },
+    {
+      "n": 3,
+      "slug": "03-models",
+      "title": "模型：身份、预算与重试边界",
+      "dependsOn": "02-turn",
+      "implementation": [
+        "host/src/models.mjs#parseModelKey",
+        "host/src/models.mjs#BudgetResolver"
+      ],
+      "experiment": "labs/chapters/03-models.mjs",
+      "build": "给每个模型调用建立可复查身份和预算",
+      "connection": "Turn 已经知道何时请求；本章增加模型身份与请求消耗，避免重试在不知不觉中变成另一项工作。"
+    },
+    {
+      "n": 4,
+      "slug": "04-tools",
+      "title": "工具适配：来源、上下文与结果通道",
+      "dependsOn": "03-models",
+      "implementation": [
+        "host/src/tools.mjs#toolCatalogue",
+        "host/src/tools.mjs#wrapTool",
+        "host/src/tools.mjs#localTools"
+      ],
+      "experiment": "labs/chapters/04-tools.mjs",
+      "build": "为宿主工具建立内核可消费的契约",
+      "connection": "将工具定义、权限、Hook、执行和程序化结果分开，再交给上一章的 Turn runner 使用。"
+    },
+    {
+      "n": 5,
+      "slug": "05-context-memory",
+      "title": "上下文：一份快照，一次性交接",
+      "dependsOn": "04-tools",
+      "implementation": [
+        "host/src/context.mjs#Templates",
+        "host/src/context.mjs#promptRegistry",
+        "host/src/context.mjs#projectMessages"
+      ],
+      "experiment": "labs/chapters/05-context-memory.mjs",
+      "build": "实现同次读取的一致视图和请求投影",
+      "connection": "为 Turn preflight 准备提示与能力材料，并保证捕获后的更新不会污染正在运行的工作。"
+    },
+    {
+      "n": 6,
+      "slug": "06-session-compaction",
+      "title": "历史：提交游标、协议与压缩边界",
+      "dependsOn": "05-context-memory",
+      "implementation": [
+        "host/src/history.mjs#historyCursor",
+        "host/src/history.mjs#checkpoint",
+        "host/src/history.mjs#compactView"
+      ],
+      "experiment": "labs/chapters/06-session-compaction.mjs",
+      "build": "让历史只在持久成功后推进",
+      "connection": "接上 Session 持久事实与模型投影，处理写入失败，并用同一份上游协议验证 checkpoint 结构。"
+    },
+    {
+      "n": 7,
+      "slug": "07-permissions",
+      "title": "授权与沙箱：解析不等于许可",
+      "dependsOn": "06-session-compaction",
+      "implementation": [
+        "host/src/permissions.mjs#localCheck",
+        "host/src/permissions.mjs#authorize",
+        "runtime/sandbox.mjs#runSandboxed"
+      ],
+      "experiment": "labs/chapters/07-permissions.mjs",
+      "build": "在实际效果之前建立可解释的权限边界",
+      "connection": "把客户端路径语法、本地检查、最终授权与系统执行分开，工具 wrapper 不再把可解析输入等同于可执行输入。"
+    },
+    {
+      "n": 8,
+      "slug": "08-plugins-mcp",
+      "title": "插件：发现完成，旧代仍可继续",
+      "dependsOn": "07-permissions",
+      "implementation": [
+        "host/src/plugins.mjs#createPlugins",
+        "host/src/plugins.mjs#mcpRuntime",
+        "host/src/skills.mjs#parseSkill"
+      ],
+      "experiment": "labs/chapters/08-plugins-mcp.mjs",
+      "build": "实现发布屏障与真实 MCP 能力代",
+      "connection": "本章将外部工具装入 Turn 捕获的快照；新版本发布和旧连接销毁由不同条件控制。"
+    },
+    {
+      "n": 9,
+      "slug": "09-queue-cancel",
+      "title": "队列、子任务与取消：接纳之后怎么办",
+      "dependsOn": "08-plugins-mcp",
+      "implementation": [
+        "host/src/queue.mjs#WorkQueue",
+        "host/src/fork.mjs#forkTask"
+      ],
+      "experiment": "labs/chapters/09-queue-cancel.mjs",
+      "build": "为运行意图建立持久状态与恢复规则",
+      "connection": "把忙碌时的输入保存为队列，并用独立 Session 承载子任务，取消和重启都不能模糊工作身份。"
+    },
+    {
+      "n": 10,
+      "slug": "10-sdk-events",
+      "title": "SDK：从交错事件到可信结果",
+      "dependsOn": "09-queue-cancel",
+      "implementation": [
+        "host/src/sdk.mjs#collector",
+        "host/src/events.mjs#EventStore"
+      ],
+      "experiment": "labs/chapters/10-sdk-events.mjs",
+      "build": "给客户端结果增加身份、序号与完整性",
+      "connection": "事件从 Turn 正确提交后，仍需要客户端按归属和更新语义还原结果，并能发现重复、丢帧与未完成。"
+    },
+    {
+      "n": 11,
+      "slug": "11-first-contribution",
+      "title": "贡献：从反例到可审查补丁",
+      "dependsOn": "10-sdk-events",
+      "implementation": [
+        "host/src/contribution.mjs#investigation",
+        "host/src/models.mjs#parseModelKey"
+      ],
+      "experiment": "labs/chapters/11-first-contribution.mjs",
+      "build": "生成有版本、red-green 和范围声明的调查材料",
+      "connection": "把前面做实验的方式变成协作交付，区分教学反例、真实上游故障、讨论、PR 与合并。"
+    },
+    {
+      "n": 12,
+      "slug": "12-comparison-interview",
+      "title": "总装：热更新、取消与排队修复",
+      "dependsOn": "11-first-contribution",
+      "implementation": [
+        "host/src/app.mjs#createApplication",
+        "host/src/turns.mjs#runTurn"
+      ],
+      "experiment": "labs/chapters/12-comparison-interview.mjs",
+      "build": "把十三步装成真实运行的产品宿主",
+      "connection": "同一个 host 接纳长任务 A，保持旧插件租约，取消后释放状态，再让队列中的 B 使用新能力完成文件修复。"
+    }
+  ]
+}

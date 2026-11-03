@@ -1,40 +1,33 @@
-## 模型看到的不是整个工作区
+## 本章的问题
 
-文件存在于磁盘，不意味着它已经进入模型请求。对话历史、用户指令、项目说明、Skill、工具定义与记忆需要被读取、裁剪、组合，再投影到本轮上下文中。把这些步骤分开，就能解释“文件里明明有，模型却不知道”一类问题。
+准备任务时读取 R1，排队期间用户更新模板为 R2，执行时又读最新值，就会把两代材料混进一次请求。解决办法不是全局锁住所有更新，而是明确本次调用使用哪份 snapshot。
 
-先看 `turn-system/agent-host/preparation/`：它包含配置、prompt surface、memory composer 等设施。再回到第 2 章的 `convertToLlm`，区分准备时组装的上下文和真正发给模型的消息。
+host 的 Templates 捕获不可变视图，实际 Prompt Registry 负责把提前准备的 scope 交给正确 Turn。另一个投影保留 canonical history，按本次请求限制排除孤立结果和旧图片。
 
-## 记忆可以分成索引、尾部和按需读取
+## 沿固定源码逐段拆解
 
 @source memory
 
-`buildMemoryTailBlock` 把最近记忆包在带路径的块中。相邻函数负责 summary、超预算提示与 topic 列表；它们说明持久记忆和本轮注入内容并非逐字等同。
+### buildMemoryTailBlock 决定记忆怎样成为请求文字
 
-这是一种容量管理取舍：全部注入简单，却消耗更多上下文；只注入索引或尾部，成本小，但模型必须能定位并读取旧信息。继续追 `memory-prompt-composer.ts`，才能判断本版本如何分配具体注入预算，不能从 block formatter 推断完整策略。
-
-还应区分 recall 和 write。允许读取历史经验，并不必然允许本次任务写入长期记忆。Session memory policy 里分别保存这些状态。隐藏子任务、legacy 来源等上下文也可能有不同写入指导。
-
-## 同一次模型调用需要一致的 prompt 读取
-
-想象 admission 前读到了一个模板，开始 Turn 时模板又更新了。如果前后随意重读，用户、日志与实际请求很难对应。`PromptReadScope` 把 host source 和一次 snapshot 绑在一起；Registry 负责把它交给对应的内部 Turn。
+来源文本进入 prompt 尾部是一个投影步骤，不是把所有记忆数据库都复制到模型。记忆内容、模板 snapshot 与会话事实各有 owner；“忘了测试结果”要查历史，“项目规则没进入”要查注入。
 
 @source registry
 
-@lab registry
+### BoundedInternalTurnPromptReadRegistry 的六个动作
 
-观察实验中四个性质：reservation 计入容量；remember 必须对应已预留的 Turn；rebind 把同一读取交给新 ID；take 消费之后就不能重复取出。`close` 清空并禁止后续预留。
+reserve 在准备开始前占容量；remember 只能填入已有预留；rebind 移动已保存 scope 且拒绝目标冲突；take 同时取出并删除；discard 放弃；close 清空并阻止后续 reserve。只有预留、没有值的条目也占名额。
 
-这是一段进程内交接代码。它没有 WAL、数据库事务或进程重启后的读取逻辑，所以不能把它称为 durable checkpoint。先明确一个对象承诺的生命周期，才能知道应该在哪里修恢复问题。
+| 状态 | 允许变化 | 不变量 |
+| --- | --- | --- |
+| 未存在 | reserve | entries+reservations 不超容量 |
+| 预留 | remember 或 discard | 不能没有预留就注入 scope |
+| 已保存 | rebind、take、discard | 身份不冲突，只交接一次 |
+| 已关闭 | 不再接纳 | 后续准备不能复用旧 registry |
 
-## 和已有实验接起来
+图片投影要同时反向遍历消息与同消息内图片，才会保留最新项。仅把外层消息倒序，内层仍正序 map，会留下旧图而删除新图。这是本章实验能抓到的真实错误基线。
 
-Learn Claude Code 的金丝雀实验回答“哪段文字进入了哪次请求”。这里可以沿 composer 和 snapshot 路径解释原因。一个完整调查可以同时保存：配置、文件内容的非敏感标记、请求中的出现位置、读取时机与源码版本。
-
-## 同一次模型调用应该看到一份一致的材料
-
-假设用户在内部摘要任务排队期间更新了提示模板。若准备阶段读 R1，执行阶段又随手读最新 R2，就可能把两份不一致的规则拼进同一次请求。PromptReadScope 把 source 与 immutable snapshot 放在一起，表达“本次调用使用哪次捕获”。
-
-快照不是把整个数据库永久复制出来。它是一个明确的读取视图：生产宿主选择快照，消费者按这个视图读模板。若快照失效，错误类型还能告诉外层应重建内置提示；不要把这种情况简单处理成空字符串后继续推理。
+## 机制总览
 
 ```mermaid
 flowchart TD
@@ -46,29 +39,44 @@ flowchart TD
   T --> Q[按同一 snapshot 构造请求]
 ```
 
-## Registry 的五个方法，各自对应一种所有权变化
+## 接入贯穿项目
 
-reserve 先占容量；remember 把预留转成有值条目；rebind 在条目已有值后改身份；take 取出并删除；discard 放弃；close 清空并阻止后续预留。未填值的 reservation 也占容量，避免准备中的任务无限堆积。
+@implementation 05-context-memory
 
-rebind 不是任意 rename。目标被 entries 或 reservations 占用时会失败；源只有 reservation、还未 remember 时也不能通过同一分支重命名。把方法按一个状态表展开，比把它叫“缓存”更准确。
+### 逐步跟踪本章实现
 
-| 状态 | 允许的主要动作 | 需要守住的约束 |
-| --- | --- | --- |
-| 没有条目 | reserve | 总容量不能超限 |
-| 只有预留 | remember / discard | 不能无预留注入值 |
-| 已保存 scope | take / rebind / discard | 身份不能冲突；take 只交一次 |
-| 已关闭 | 清理结束 | 不再接受新的预留 |
+Templates.capture 复制当前键值并冻结快照，read(snapshot, key) 只从那份值中取材料。更新 Templates 本体不会改变已经捕获的 system。preparePrompt 再把模板与带来源的记忆合成请求材料，并计算摘要，以便直接比较 A、B 两个 Turn 的视图。
 
-## 记忆文本与状态快照是两件事
+Prompt Registry 在 app.run 里先 reserve，准备好后 remember，消费时 take，最后 discard。它限制的是未完成的准备与读取责任，不能只按“已经存了多少正文”判断容量。课程直接装载固定上游实现，实验分别覆盖占位、快照、重复读取和淘汰边界。
 
-buildMemoryTailBlock 决定记忆如何表现为请求文字；PromptReadScope 决定模板读取的一致视图；Session history 保存实际交互事实。三者可能出现在同一次 preparation 中，但不能混成一个“记忆系统”。
+projectMessages 复制历史，追踪 assistant calls 与 tool results，过滤无归属结果并补中断错误，再从后向前保留最新图片预算。原 Session 的图片和消息不被裁剪；同一条消息里的多张图也要逆序检查。实验曾让这条分支暴露保留旧图的问题，现用新旧图断言约束它。
 
-当模型忘了上一步的测试结果，先检查历史投影；当项目指令没有生效，检查发现与注入；当模板热更新后偶现行为不一致，检查快照捕获与交接。给不同故障找不同 owner，才能提出局部修复。
+## 运行本章实验
 
-## 练习：把有限容量设计成反例
+```bash
+node --disable-warning=ExperimentalWarning labs/chapters/05-context-memory.mjs
+```
 
-容量设为 1。先 reserve A，不 remember，就尝试 reserve B；随后 remember A、rebind 到 C、take C，再试 B。写出每一步返回值与占用。再测试目标身份冲突、重复 take、close 后 reserve。课程离线实验已经覆盖核心路径，你应增加一个自己的冲突用例并说明不变量。
+@experiment 05-context-memory
 
-::: interview 为什么“持久记忆写成功”不能证明“下一轮会记得”？
-持久存储、召回选择、注入预算和模型实际使用是不同步骤。要核对读写 owner、Session policy、裁剪策略与最终请求。用合成金丝雀验证是否进入请求，再解释它在上下文中的位置；不能只看磁盘文件或模型的一次回答。
+## 逐项解释实验结果
+
+捕获 R1 后更新模板，旧 snapshot 仍读 R1，新 snapshot 读 R2。容量为 1 时未填的 A 阻止 B，rebind 后 take 只成功一次。投影结果省略 old、保留 new，原始历史两个图都还在。
+
+实验直接运行上游 Registry；模板和投影为原创教学实现。输出中的 scope 身份只是合成材料，不是持久 Session 恢复。
+
+## 继续动手与验收
+
+制造 rebind 的目标预留冲突，并确认旧 scope 仍可取出。再让同一消息有三张图片、前一消息有两张，只允许最新两张，断言原历史没有变化。
+
+::: interview 提示快照和记忆正文为什么不是同一种状态？
+同一 Turn 读取捕获时的材料视图，后续更新只影响新捕获者；Prompt Registry 管理准备责任与有界容量。请求投影可裁剪图片或补中断结果，原日志保持完整，不能把这两层混作同一份数组。
+:::
+
+::: interview 为什么未填入值的 reservation 也占容量？
+准备中的工作同样消耗资源。若只统计 entries，大量未完成准备会绕过容量限制；reserve 必须先占名额，remember 再转换状态。
+:::
+
+::: interview 图片投影为什么要连同消息内数组一起倒序？
+最新图片可能位于同一消息的后面。只倒序遍历消息、内部正序处理，会保留旧图删除新图；应按完整时间顺序从新到旧消耗预算，且不改 canonical history。
 :::

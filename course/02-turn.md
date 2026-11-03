@@ -1,74 +1,83 @@
-## Session 和 Turn 不是一个生命周期
+## 本章的问题
 
-Session 是可以继续的对话与相关状态；Turn 是一次被接纳的执行。一个 Session 可以承载多个 Turn。进程也可能同时处理多个 Session。因此，把“当前工具列表”“历史游标”“事件计数器”放在进程共享的可变字段中，会让交错执行相互影响。
+模型说完最后一个字，writer 仍在写前一条事件。如果此时先发送 completed，客户端会看到终态越过结果。并行工具和异步存储让这种错误更容易出现。
 
-`PiTurnRunner` 的类实例保存进程级缺省设施，每次 `runTurn` 创建新的 Turn 状态。先读这个装配入口，再读各个 helper，比从底层 Agent 循环反向猜产品状态更容易。
+本章先让第一个 writer 等待，第二个事件已经入队；观察它不能抢先提交。然后让 writer 在 item.updated 处失败，检查运行不会被报告成成功。我们关心的是事件和持久事实的先后，不是 UI 是否暂时停止动画。
+
+## 沿固定源码逐段拆解
 
 @source runner
 
-## 找到 Pi 真正进入的地方
+### runTurn 的前半部按生命周期装配
+
+newTurn 创建不可跨轮复用的工具、bridge、计数器和请求配置；emitRunning 先发布运行状态；newAgent 注入提示、模型、工具和历史；newHistory 建立游标；随后安装 hooks、订阅事件，再连接取消信号。每一步若提前或延后，都可能漏掉第一条事件或复用旧状态。
 
 @source agent
 
-`newAgent` 注入 systemPrompt、model、tools 和 initialMessages；`convertToLlm` 则生成真正面向模型的历史投影。该函数还设置并行工具执行。阅读时区分三个对象：产品中的 Session 历史、一次 Turn 的内存状态、一次模型请求的 messages。
+### newAgent 让内核只消费已装配材料
 
-源码中的投影会处理孤立工具结果和图片请求限制。它提示了一个重要设计：为了适配模型而改请求，不必同时改掉保存的原始历史。保留事实和决定本次发什么，可以是两套数据结构。
-
-## 并行执行，串行提交观察结果
-
-继续阅读 `pi-turn-runner.ts` 中的 Step 4–6：先安装工具和 LLM hooks，再订阅事件，把并行 promise 分支产生的 AgentEvent 接入一个串行队列。队列负责翻译 RuntimeEvent、更新历史游标并调用 step-end 逻辑。
-
-这不代表工具变成串行。计算可以并行，而状态提交与观察输出需要一个可解释的顺序。否则 UI、持久历史和最终状态可能分别看到不同顺序。
-
-取消也不是抛一个异常就结束。调用前 signal 已取消，需要避免启动 Agent；执行中取消，需要转发到 `agent.abort()`；结束时还要处理已排队事件、终态输出和 metrics 收尾。源码的 `finally` 路径值得和正常分支一起读。
-
-## 把 runTurn 的八个步骤读成生命周期
-
-这是本项目最值得慢读的函数之一。它先创建 Turn 私有状态，发 running；再创建 Agent 和历史游标，安装工具/LLM hooks，订阅事件，接取消信号，驱动 Agent，最后 drain 事件、flush 历史、发 terminal。把顺序打乱，正常任务也许还能工作，取消与并行工具却会暴露问题。
-
-```mermaid
-sequenceDiagram
-  participant H as 宿主
-  participant R as PiTurnRunner
-  participant A as Pi Agent
-  participant Q as 串行事件队列
-  H->>R: runTurn(input)
-  R->>H: running
-  R->>A: initialState + hooks + subscribe
-  R->>A: prompt 或 continue
-  A-->>Q: AgentEvents
-  Q-->>H: RuntimeEvents + 历史尾部
-  A-->>R: idle
-  R->>Q: unsubscribe 后 drain
-  R->>H: flushTail 后 terminal
-```
-
-## 为什么一轮一套对象
-
-PiTurnRunner 实例保存时钟、日志、allocator 等进程级默认值；Turn 内保存 event sequence、bridge、工具上下文和请求历史游标。若这些对象跨 Turn 复用，下一次任务可能继承旧 seq、旧取消状态或未释放监听器。每轮重建的成本换来了更清晰的所有权。
-
-Session 历史仍由宿主提供。newAgent 把 systemPrompt、model、thinking、tools 与 initialMessages 注入 Pi；convertToLlm 则为本次请求投影历史。因此“新 Agent”与“新会话”是两件事。
-
-## 并行事件怎样获得确定顺序
-
-工具完成来自不同 Promise 分支。直接在各分支异步写 RuntimeEvent，可能把 message_end、tool_result 与 terminal 交错。subscribeEvents 用一个串行队列承接事件，后续 drain 等待已入队任务完成。这不保证工具按请求顺序完成，但保证产品事件的提交经过同一条序列化路径。
-
-`idle` 也不等于所有宿主工作已完成。Agent 停止产生新事件后，队列可能仍有写入；history.flushTail 还会补上没有对应边界回调的历史尾部。这就是为什么最终 terminal 必须等这两件事。
+initialState 提供 systemPrompt、model、thinking、tools 和 initialMessages。convertToLlm 负责请求投影。PiTurnRunner 保留进程级默认值，每次 runTurn 再创建 Agent；新 Agent 并不等于新 Session。
 
 @source runner-finalize
 
-## 跑一个可以控制 Agent 的实验
+### runAgent 返回后仍有三项工作
 
-@lab turn
+先 unsubscribe，阻止产生新的订阅交付；drain 等已有串行任务结束；flushTail 补上没有相应边界回调的消息；最后 emitTerminal 选择正常、强制失败或取消原因。
 
-实验从固定源码提取 runAgent、相关恢复函数和用户消息转换函数，用 fake Agent 记录调用。prompt 与 continue 走不同入口；正常返回是 undefined；取消转换为 aborted；抛错走失败分类端口。还可以看到 converge 后再次 waitForIdle。
+@source event-delivery
 
-注意这里没有执行外层 runTurn 的事件队列。实验中的 aborted 行是在驱动函数结束时观察到信号，不能证明已经取消的输入绝不会 prompt；真正的提前拒绝位于外层 runner 的前置检查。把这两层区分开，正是阅读实验的意义。
+### 终态本身也能失败
 
-## 练习：指出四个错误改动的后果
+桥接器生成终态帧，与 writer 提交这些帧，是两个可分别出错的阶段。源码分别记录 translation 和 delivery。host 同样保留 delivered 与 persisted，不用一个 completed 掩盖失败。
 
-把 terminal 提到 drain 前；把 Agent 存在 runner 字段复用；在订阅事件前调用 prompt；收到 abort 后马上返回而不等队列。逐项写出会丢失什么、污染什么或留下什么资源。答案至少包含一个可观测事件序列，并说明测试该放在内核适配还是宿主结算层。
+```mermaid
+flowchart TD
+  A[接纳并装配] --> S[订阅后驱动模型]
+  S --> Q[事件进入串行队列]
+  Q --> D[停止产生事件后 drain]
+  D --> H[flush 历史尾部]
+  H --> T[终态交付]
+  T --> R[释放会话 owner]
+```
 
-::: interview 为什么一个 Agent 结束了，产品还可能不能接下一条消息？
-模型循环返回、工具子进程退出、事件队列排空、历史提交和 Session busy 状态释放是不同步骤。应按真实执行路径确认最终结算顺序，并测试取消后立即再次发送，而不能只检查界面显示了 cancelled。
+## 接入贯穿项目
+
+@implementation 02-turn
+
+### 逐步跟踪本章实现
+
+SerialDelivery 把每次 write 串到前一个 Promise 后面，后到的事件只能排队。runTurn 的 emit 统一添加 sessionId、turnId、递增 seq；序号在宿主侧生成，writer 的快慢不能重新排列事件。writer 一旦失败，交付链保留故障，不把后续 drain 当成成功。
+
+一次迭代先产生 item.started 和可选 delta，再把 assistant 与工具结果写入 messages。historyCursor.flush 成功后才发 item.completed；模型还要工具时继续下一迭代，没有工具才结束。模型的停止条件与外部客户端看见的完成因此有明确的持久化边界。
+
+catch 先分类执行失败或取消，随后仍需 drain、flush 尾部并尝试终态。收尾失败会把最终结果改成 failed，并分别返回 persisted 与 delivered。测试故意拖住第一个 writer，检查第二个事件没有抢跑；这比按同步 mock 的调用次数判断顺序更有说服力。
+
+## 运行本章实验
+
+```bash
+node --disable-warning=ExperimentalWarning labs/chapters/02-turn.mjs
+```
+
+@experiment 02-turn
+
+## 逐项解释实验结果
+
+先检查 order 在释放首个 writer 前为空，释放后是 1、2。正常 Turn 的最后一帧必须是 turn.completed，历史也已经保存；注入 writer 故障时 result.status 是 failed，delivered 为 false。
+
+这不等于网络 exactly-once。客户端断线后的重放和去重属于第 10 章；存储与外部效果之间的不确定性在第 9 章处理。
+
+## 继续动手与验收
+
+把终态发送挪到 drain 前，让实验失败。再让 persist 而非 writer 抛错，区分两种失败的结果，说明哪一份事实可以重放、哪一项需要人工恢复。
+
+::: interview Agent idle 为什么还不能立即发布 completed？
+Agent idle 只说明模型执行停止，已入队事件、历史尾部与终态交付仍可能未完成。应先停止产生事件，再 drain、flush 并交付终态；writer 或 persist 失败必须保留归因，不能提前报告 completed。
+:::
+
+::: interview writer 抛错和模型抛错怎样分别归因？
+模型失败属于执行结果，writer 失败属于交付边界。两者都不能报告正常成功；应保留哪个阶段失败，以及历史是否已经提交，供重放或协调。
+:::
+
+::: interview 为什么每个 Turn 都新建内核状态？
+事件序号、取消、bridge 与历史游标只属于本次工作。复用这些对象会继承旧状态；持久 Session 历史则由宿主重新提供，两者不矛盾。
 :::

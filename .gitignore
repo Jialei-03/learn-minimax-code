@@ -9,3 +9,7 @@ site/dist/
 .claude/
 .worktrees/
 *.log
+
+# Ephemeral course verification reports
+labs/chapters/.last-run.json
+.verification/

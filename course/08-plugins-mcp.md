@@ -1,43 +1,32 @@
-## 四个概念放在正确位置
+## 本章的问题
 
-| 概念 | 主要职责 | 追踪时关注什么 |
-| --- | --- | --- |
-| Plugin | 分发与组织一组能力 | 来源、安装、启用、版本与生命周期 |
-| Skill | 让 Agent 按需获得做事方法 | metadata、正文读取、权限及来源 |
-| Hook | 在生命周期节点参与处理 | 触发时机、输入输出、失败语义 |
-| MCP | 对外部能力进行协议交互 | 发现、调用、结果、连接与清理 |
+Turn A 用 R1 的工具执行，更新后 B 应看到 R2。直接在 replace 时关掉 R1 会中断 A；永不关闭则泄漏资源。再加一个竞态：连接完成了，但 tools/list 还没发布，第一轮就捕获了空清单。
 
-它们可以组合：一个 Plugin 同时携带 Skill、Hook 与 MCP 配置。支持一种能力，不等于同一 Plugin 的所有能力都已经完成发现并进入当前 Turn。
+host 用 discovery Promise 作为捕获屏障，发现完成后才发布新 revision；旧能力代由真实上游 GenerationRegistry 计租约，最后一个使用者释放后才清理。
 
-## Skill 首先是一个需要校验的包内容
+## 沿固定源码逐段拆解
 
 @source skills
 
-`parseSkillFrontmatter` 要求起始 YAML 块与闭合分隔符，并要求解析结果是 mapping。后续 YAML 解析拒绝重复键，限制 alias 展开。配置格式的错误应在读包边界被解释，避免到模型执行时才变成一个模糊失败。
+### Skill 包内容先过读取与格式边界
 
-继续追 `skill/reader.ts` 和 package readers，核对名称、目录、相对路径与启用状态的处理。只有成功读取并发布，才谈得上可供 Agent 选择。
-
-## MCP 连接不能随着配置更新被立刻销毁
-
-假设 Turn A 读取了插件版本 R1 的工具快照；用户更新后，Turn B 开始使用 R2。若切换时立刻关闭 R1 的连接，A 已经看到的工具可能在调用时消失。
+parseSkillFrontmatter 要求起始和闭合块、mapping 形状，并拒绝重复键与过度 alias。格式错误应在读取包时被解释，不要等模型调用才变成模糊失败。host 使用更小的标量方言，明确不支持完整 YAML。
 
 @source mcp-generation
 
-`PluginCapabilityGenerationRegistry` 按 revision 保存运行时并计数 lease。replace 把旧代标为 retired；release 减少引用，满足条件后才清理。它解决的是能力快照与资源生命周期的协调。
+### retain 与 release 管正在使用的旧代
 
-这与第 5 章 prompt Registry 有相似的所有权问题，但不是同一个类，也没有被那个离线实验覆盖。要验证 MCP generation，需要调用它自己的实现和相关测试，覆盖 retain/release、替换与最终清理。
+构造时保存 current generation；retain 按 revision 增计数，缺代就报错；replace 创建新 current，把 prior 标 retired；release 递减并调用 tryCleanup。清理必须同时满足 retired、leaseCount 为零且还没开始。
 
-## “连接成功，但第一轮没有工具”怎样调查
+cleanup 先关闭 runtime，再跑该代 finalizers；失败隔离让其他收尾仍可继续。dispose 是系统级收尾，不能被单个 Turn 当作释放自己租约的替代。
 
-把时间线拆成：Plugin enabled → MCP tools/list 完成 → 发现结果发布 → Turn 捕获 capability snapshot → 工具定义投影到模型请求。每一步记录 revision 与 owner，找到具体哪一条因果边没有完成。
+### host 的发布屏障与租约分别解决什么
 
-公开 Issue #570 就报告过这种竞态，并由原作者提供补丁线索。本课程把它作为阅读案例；独立贡献任务需要检查现有提案，避免把已有修复当成自己的首次贡献。
+capture 等待 pending discovery，解决新 Turn 捕获过早；retain/release 解决旧 Turn 仍在使用。前者不能代替后者。发现失败让当前捕获失败，下一次显式更新可以重新准备，不偷偷发布半成品。
 
-## 一个真实的热更新竞态
+Plugin、Skill、Hook、MCP 可以组合，但不能共享一个含糊的 ready 布尔值。每种能力需要明确发现、发布、执行和清理的条件。
 
-Turn A 捕获了插件 R1 的 search 工具并开始执行；用户更新插件后，Turn B 应该看见 R2。若 replace 的同时关闭 R1，A 的工具连接会在半途中消失；若永不关闭 R1，长时间使用就会积累旧连接。
-
-GenerationRegistry 用 revision 识别一代能力，用 lease 记录还有谁使用。replace 把旧代标成 retired；release 让引用减一；只有 retired 且无租约，才启动清理。新版本发布与旧资源销毁被分成两个时刻。
+## 机制总览
 
 ```mermaid
 sequenceDiagram
@@ -52,26 +41,44 @@ sequenceDiagram
   Note over G: R2 继续作为 current
 ```
 
-@lab generation
+## 接入贯穿项目
 
-这里实际执行完整 Registry 及其纯依赖模块，只把 runtime.close 换成记录器。替换时旧代没有关闭，释放后关闭一次，dispose 还会清理新代。关闭 R1 与关闭 R2 可以交错，finalizer 只要求在所属 R1 close 之后，不能据一份输出臆造所有代之间的全局串行保证。
+@implementation 08-plugins-mcp
 
-## lease 是责任，必须对应释放
+### 逐步跟踪本章实现
 
-捕获快照就 retain，Turn 在任何退出路径都要 release。缺一次 release，旧代就一直留着；提前 release，会把仍在使用的连接关掉。测试应覆盖正常结束、模型报错、用户取消和更新过程中退出，不只检查 retain/release 两个方法各自能调用。
+update 把 discovery 串在 pending 后，先等新 runtime 完成发现，才发布 revision。capture 也等待同一 barrier，再 retain 当前 generation，避免拿到新版本号配旧目录。发现失败会阻止这次 capture；显式下一次 update 可以重新尝试。
 
-Registry 的 dispose 是进程或系统级收尾，不是每个 Turn 都应调用的快捷清理。它会把代标退休、清空 lease 并等清理任务。把它放在某个任务 finally 中，会影响其他还在运行的任务。
+发布 R2 时，已经 capture R1 的 Turn 继续持有它的 tools 与 runtime。release 只释放那份租约，归零后旧 runtime 才 close。finalizer 捕获的是 retired revision，不能闭包引用会继续变化的 current，否则晚到的清理可能删掉新视图。
 
-## Skill 校验与 MCP 生命周期怎样关联
+mcpRuntime 真正启动 stdio peer，完成握手和 list 后把目录变成 configured tools。调用错误映射为工具 isError，初始化失败则关闭进程。课程同时验证 registry 状态和真实 peer 生命周期：只有引用数变化而子进程仍泄漏，不能算热更新验收通过。
 
-Plugin 可以分发 Skill、Hook 和 MCP；这些能力不共享同一个“完成发现”的时刻。Skill YAML 先要解析、拒绝重复键与不合格结构；MCP 要完成连接和 tools/list；最终能力视图还要发布给 Turn。配置 enabled 只是起点。
+## 运行本章实验
 
-遇到“第一轮没有工具，第二轮出现”时，按 revision 记录连接完成、发现结果发布、Turn 捕获与请求投影四个时间点。若没有这份时间线，延迟启动只是把竞态隐藏起来。
+```bash
+node --disable-warning=ExperimentalWarning labs/chapters/08-plugins-mcp.mjs
+```
 
-## 练习：写一个旧代存活测试
+@experiment 08-plugins-mcp
 
-retain R1 两次，replace R2，release 一次，断言 R1 尚未关闭；release 第二次，断言关闭一次；重复 release 不应再次关闭；dispose 后 R2 关闭。把 close 人为延迟，再确认 finalizer 仍在 close 后面。它是一个明确的资源生命周期测试，不需要真实 MCP 服务。
+## 逐项解释实验结果
 
-::: interview 热更新插件时，为什么需要 capability generation？
-正在运行的 Turn 需要继续使用它捕获时的工具契约和连接。用 revision 区分代，用 lease 保留仍被使用的旧运行时，等最后一个使用者结束再清理。验证不能只看新版本工具列表，还需要检查旧 Turn 是否能完成以及资源是否最终释放。
+真实 MCP fixture 的发现被人为挂起，capture 必须等待。R2 发布后，新的快照能立即调用 mcp_echo，旧快照仍保留 old；R1 直到 release 才关闭，重复 release 不会再次关闭。
+
+实验执行了完整上游 generation 及其纯依赖；发现屏障和 host 编排是原创教学层，不把它写成已经向上游修复的证据。
+
+## 继续动手与验收
+
+同时持有两个 R1 lease，只释放一个时断言连接存活。让 close 延迟，再检查该代 finalizer 在 close 之后。最后取消 discovery，定义下一次更新怎样恢复。
+
+::: interview 更新插件时为什么不能立即关闭全部旧连接？
+先完成 discovery 再发布 R2，新 Turn 等 barrier 后捕获它；已持有 R1 lease 的任务继续使用旧 runtime。引用归零才清理旧资源，finalizer 必须绑定被退休的版本。真实 MCP 退出是资源回收的直接证据。
+:::
+
+::: interview 发现屏障和 generation lease 能互相替代吗？
+不能。前者保证新 Turn 捕获前发现已完成；后者保证旧 Turn 结束前资源仍存活。它们分别约束准备时序与资源寿命。
+:::
+
+::: interview 为什么不能在一个任务 finally 里 dispose 整个插件系统？
+系统还可能服务其他 Turn。单个任务只释放自己的 lease；系统 dispose 应在应用停止接纳并等待活动工作收尾之后进行。
 :::

@@ -1,109 +1,89 @@
-## 总装：把一个请求走到底
+## 本章的问题
 
-你现在应该能解释：输入经适配器进入应用；Session 与队列管理工作意图；Turn admission 确定执行身份；preparation 捕获提示与插件能力；PiTurnRunner 创建 Agent；模型和工具事件经过桥接提交；历史尾部收束后发布终态；SDK 再把 item 事件投影成客户端结果。
+这是整门课的最终任务：A 正运行一个真实长进程，插件从 R1 更新到 R2，用户取消 A，同时 B 已经进入持久队列。我们要证明旧连接不会提前关闭，A 真的收尾，B 能立即接纳，并用 R2 工具修好项目。
 
-```mermaid
-flowchart TD
-  U[用户任务与 clientRequestId] --> A[适配器与 Applications]
-  A --> S[Session / Queue / admission]
-  S --> P[提示与插件快照]
-  P --> R[PiTurnRunner]
-  R --> M[模型与工具]
-  M --> E[事件桥与串行队列]
-  E --> H[历史提交与终态]
-  H --> I[SDK ItemAccumulator]
-  I --> C[客户端结果]
-```
+模型回复仍可控，其他路径都实际执行：日志写盘、长进程启动与终止、两个 MCP 服务、Skill 展开、文件替换、Node 回归、队列消费和 SDK 归并。课程不再另写一个“演示专用”的快捷宿主。
 
+## 沿固定源码逐段拆解
 
 @source runner-finalize
 
-这个收尾片段与第 2 章相同：先等待事件队列和历史，再发布终态。下面的教学宿主把这个顺序缩成可以改动的代码。
+### 先把最终时刻定义清楚
 
+取消请求返回不是完成，Agent idle 不是交付完成。drain、flushTail 与 emitTerminal 的相对顺序，决定何时可以释放 active owner。host Application 的 finally 等 runTurn 完整结算后才释放。
 
-## 总装实验：一个可以运行的教学宿主
+@source mcp-generation
 
-Pi 课最后把部件装成 mox；这里把三个真实上游组件装进一个很小的课程宿主：PromptReadRegistry 管理准备材料，GenerationRegistry 管理能力代，ItemAccumulator 管理客户端结果。宿主的接纳、busy 和事件归属逻辑由课程自己实现，方便你逐行修改。
+### 更新不会改变 A 已持有的契约
 
-完整实现位于 [labs/host-lifecycle.mjs](https://github.com/Jialei-03/learn-minimax-code/blob/main/labs/host-lifecycle.mjs)。它不请求模型，也不启动生产 Session 服务；它是把前面机制组合起来的实验台。
+A 捕获 R1 后，R2 可以发布，但 R1 lease 仍为一。只有取消运行完成、finally 释放之后，旧 runtime 才关闭。应用 dispose 则等活动工作收尾，再关闭当前代。
 
-```bash
-npm run lab -- capstone
-```
+@source queue-contract
 
-实验按顺序做十一件事：接纳 A，持有 R1；发布 R2；请求取消 A；尝试过早接纳 B；等待 A 交付收尾；释放 R1 和 busy；接纳 B；丢弃 A 的迟到事件；完成 B；再关闭当前 runtime。A 保留 partial/incomplete，B 得到完整结果。B 的 tests passed 是合成文本，没有运行项目测试。
+### B 的意图与执行分别持久化
 
-@replay capstone
-
-### 从这个实验里改出一个错误
-
-先把 finish 中释放 busy 的动作移到等待 pendingDelivery 之前，重新设计断言，证明 B 会越过 A 的交付。再暂时去掉 deliver 的 turnId 归属检查，给 B 运行期间注入 A 的迟到事件，观察结果怎样被污染。最后恢复代码，让所有断言重新通过。
-
-还可以把 generations.release 删掉，检查旧 R1 为什么会一直保留到系统 dispose；把它提前到热更新之前，说明正在使用的契约为什么会失效。每次只改一个地方，保存自己的输入和输出。
-
-这个宿主验证的是组合后的教学契约。生产 MiniMax 的 busy 释放、事件存储与 admission 仍应沿第 1、2、9 章的实际实现独立验证。掌握这个区别后，你就能用小实验缩小问题，又不会把模拟当成产品已通过。
-
-
-## 三个项目真正值得比较的设计点
-
-Pi 课程帮助你理解最小内核和扩展机制；Claude Code 主线现在依据还原源码研究产品分支，并保留独立版本实验；MiniMax 展示公开产品如何装配 Pi、拥有状态和发布能力。它们不只是能力清单不同，而是状态 owner 与扩展边界不同。
-
-比较工具调度，要看谁声明并发安全、谁分组、结果怎样保持关联；比较恢复，要看事实保存、模型投影、压缩和协议修复分别在哪一层；比较取消，要看信号、事件 drain、进程回收和 admission；比较插件，要看发现、快照与旧代清理。
-
-不要把当前 MiniMax vendored Pi 与 Pi v1.5.0 当作逐行相同。相同的包名和 Agent API 只能提示关联，版本与宿主补丁仍需核对。
-
+入队保存 clientRequestId，claim 后需要 acceptance，完成且可恢复的执行才 consume。accepted 后崩溃仍保留不确定性，课程没有把这段状态机包装成外部效果 exactly-once。
 
 @source sdk
 
-SDK 的归并类是客户端边界；它与 runner 的终态不是同一份状态。这也是总装实验同时保留 A incomplete 与 B completed 的理由。
+### 两个 Turn 的客户端结果互不污染
 
+collector 先检查归属，再使用 ItemAccumulator。A 的文字可以保留为 incomplete，整体状态为 cancelled；B 完成自己的 item 和 Turn。旧事件不会因为 Session 相同便落入 B。
 
-## 把三门课连成一条能力线
+```mermaid
+flowchart TD
+  A[接纳 A 与 R1 lease] --> P[真实长进程启动]
+  P --> U[发布 R2；B 入队]
+  U --> C[取消 A]
+  C --> D[进程退出、交付与历史收尾]
+  D --> R[释放 R1 和 busy]
+  R --> B[B 接纳：R2 与新模板]
+  B --> F[Read、Skill、Edit、Test、MCP]
+  F --> S[消费队列与 SDK 完成]
+```
 
-| 维度 | Learn Pi Agent | Learn Claude Code | Learn MiniMax Code |
-| --- | --- | --- | --- |
-| 主要方法 | 从零实现，再读 Pi | 还原源码与独立版本实验 | 公开源码与真实函数实验 |
-| 核心问题 | 一个 Agent 怎样工作 | 成熟产品做了什么 | 产品运行时怎样装配内核 |
-| 证据 | 自写代码与源码对照 | 固定还原源码、录制与开源组件 | 固定提交、局部实验、贡献补丁 |
-| 工程产出 | mox 与扩展 | 可重复实验与对照 | 架构地图与首次贡献材料 |
+三门课此时可以按同一套问题比较：Pi 的内核与扩展，Claude Code 的产品分支与控制面，MiniMax 的宿主装配与持久责任。比较状态 owner 和失败证据，比比较功能打勾更有用。
 
-这张表比较学习方法；不宣称三个 Agent 在所有能力上等价。MiniMax 的 vendored Pi 也不能直接视为另一门课固定的 Pi v1.5.0：版本、补丁、宿主接法都需要分别检查。
+## 接入贯穿项目
 
+@implementation 12-comparison-interview
 
-## 综合作业：提交一份故障调查包
+### 逐步跟踪本章实现
 
-选择“取消后立即继续”“旧插件 Turn 在更新后仍可完成”或“SDK 交错事件正确归并”之一。调查包应包含固定版本、最小输入、状态时间线、关键源码链接、回归测试和实际运行输出。至少给出一个失败路径和一个正常路径。
+A 运行时先让实际长工具子进程写 started 标记，证明它已经产生生命周期，而非只在模型脚本里声明“正在运行”。发布 R2 后，A 手里的 R1 lease 仍有效；取消必须传到工具进程，等待其退出并完成 runTurn 收尾后，owner 与 R1 才可以释放。
 
-只做本课程离线层，也可以交出有价值的结果：例如用真实 GenerationRegistry 证明旧代保留条件，用真实 QueueService 证明过期输入在存储前被拒绝。但标题要写“局部契约验证”，不能写“所有入口端到端无误”。
+B 的文本已在队列持久化，接纳时捕获 R2 和新模板，随后经 Skill、read、edit、test 与 MCP 完成修复。检查 capabilityRevision、请求提示、测试 stdout、磁盘文件和 consumed 状态，能够把“用了哪份能力”和“做成了什么”关联到同一个 turnId。
 
+两个 collector 分别消费自己的事件。A 的终态 cancelled 不会让未完成 item 变 completed；B 的 turn.completed 出现在历史与交付之后。最后 Application.close 阻止新接纳、等待 completion 并关闭 R2。模型选择是脚本化的，但取消、租约、文件修复、队列与客户端结果都是本次真实执行所得。
 
-## 一页证据清单
+## 运行本章实验
 
-| 面试官追问 | 应拿出的证据 |
-| --- | --- |
-| 你改的是什么 | 具体用户症状、版本与最小复现 |
-| 为什么会出错 | 调用链、状态变化和错误假设 |
-| 为什么这样修 | 最小 diff、兼容性与取舍 |
-| 怎么证明修好了 | 修复前失败、修复后通过的测试与检查记录 |
-| 为什么没有测某平台 | 实际限制、已覆盖层次与后续验证方案 |
-| 是你的贡献吗 | Git 作者记录、讨论、PR 与维护者反馈 |
+```bash
+node --disable-warning=ExperimentalWarning labs/chapters/12-comparison-interview.mjs
+```
 
+@experiment 12-comparison-interview
 
-## 口头检验：五分钟讲清一个机制
+@journey 12-comparison-interview
 
-第一分钟讲用户遇到了什么；第二分钟画状态和职责；第三分钟沿固定源码解释错误假设；第四分钟展示回归输入输出；最后一分钟讲取舍和未覆盖环境。若某一段只能说“AI 帮我写的”，回到那一段做一次手工推演。
+## 逐项解释实验结果
 
+展开最终实验轨迹，先定位 A 的 turnId 和 started 标记文件，确认长进程确实启动。R2 发布后 closed 仍为空；A 取消结束后才出现 r1。B 捕获 R2 与新提示，真实 test 输出 tests passed，queue 变 consumed。
 
-## 三个追问，检查理解是否扎实
+最后查看 SDK：A 的 item 仍 incomplete，B 整体 completed。Application.close 之后 r2 也关闭。每个结论都有独立断言，不能用总 PASS 替代这条因果链。
 
-**为什么不在 replace 时直接关闭所有旧 MCP？** 因为旧 Turn 仍持有快照契约；要等租约结束，同时保证最终关闭。
+## 继续动手与验收
 
-**为什么取消响应后还要等 drain？** 因为停止产生新事件与已排队事件完成提交是两个时刻，terminal 不能越过前面的事实。
+在 writer 人为延迟时取消 A，证明 B 仍要等交付。再把 A 的迟到事件重放给 B collector，检查归属拒绝。最后模拟 accepted 后进程退出，写一份恢复协调方案和哪些效果必须人工核对。
 
-**为什么重复 delta 不能像 snapshot 去重？** 因为 delta 是操作，重复内容可能是合法文本；snapshot 是状态，重复通知才可能被省略。
+::: interview 取消以后怎样证明下一条任务真的可以继续？
+先证明 A 的实际工具进程启动，再验证取消收尾、R1 lease 释放和 owner 释放；B 随后捕获 R2 与新提示，完成真实文件修复和测试。队列、磁盘、日志、SDK 和进程各自提供证据，不能只看模型最后一句成功。
+:::
 
-这些答案来自具体实现和实验。继续给每个答案补一个反例，直到你能够在没有课程文字的情况下自己推导它。
+::: interview 为什么总装要同时检查文件、测试、队列和 SDK？
+它们是不同消费者和事实层。测试通过不代表队列已消费，SDK 收到文字不代表历史已保存。组合实验需要逐边建立因果，而不只看一个总状态。
+:::
 
-::: interview 你会怎样评价一段 Agent 实习经历的工程含量？
-看能否把模糊用户问题缩成可验证契约，找到正确的状态和职责边界，做出影响范围可控的修复，并诚实报告证据与限制。Agent 会生成代码，但工程能力体现在选题、因果判断、验证和协作反馈之中。
+::: interview R2 发布后，怎样证明 A 仍使用 R1 而 B 使用 R2？
+记录每个 Turn 捕获的 revision、lease 释放与 close 时刻，并检查模型请求的提示快照。不能只看全局 current，因为那会掩盖正在运行的旧视图。
 :::

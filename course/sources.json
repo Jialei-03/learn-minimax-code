@@ -136,5 +136,29 @@
     "anchor": "export interface CommittedQueueResult<T>",
     "lines": 5,
     "note": "队列存储返回 value 与已提交事实"
+  },
+  "history-cursor": {
+    "file": "packages/agent-core/src/pi-turn-runner/history.ts",
+    "anchor": "export function newHistory(",
+    "lines": 106,
+    "note": "历史游标在交付成功后推进；持久化失败保留原始错误并停止尾部交付"
+  },
+  "event-delivery": {
+    "file": "packages/agent-core/src/pi-turn-runner/events.ts",
+    "anchor": "export async function emitTerminal(",
+    "lines": 45,
+    "note": "终态桥接与 writer 交付是两个可分别失败的阶段"
+  },
+  "queue-acceptance": {
+    "file": "packages/local-runtime-v2/src/service/session-system/queue/repo/contract.ts",
+    "anchor": "export interface QueueClaimAcceptanceQuery",
+    "lines": 16,
+    "note": "claim 的持久接纳查询与恢复契约"
+  },
+  "sdk-projection": {
+    "file": "packages/code-sdk/src/items.ts",
+    "anchor": "function toThreadItem(",
+    "lines": 18,
+    "note": "已知 item 类型投影与 incomplete 标记；未知类型留在流上"
   }
 }

@@ -1,46 +1,32 @@
-## 模型选择不是一个字符串替换
+## 本章的问题
 
-用户看到一个模型名字，运行时需要更多信息：Provider 来源、协议、地址、凭据、请求头、输入模态、thinking 方式、上下文窗口与输出上限。模型清单管理与实际请求解析也应消费一致的身份规则，否则“连接测试通过”和“实际对话可用”可能走向不同端点。
+配置里是 provider/org/model。用 split 后取第二段，只得到 org；模型命名空间丢失，后续认证、请求和 usage 归因都可能错位。错误很小，却横跨多个产品边界。
 
-阅读入口是 `service/model-system/README.md`，接着看 resolution、connectivity、management 三个目录。不要把配置写入、连通性探测和真实推理混作同一个操作。
+另一个问题是重试：如果每次都重新调整输出预算，传输层宣称重试同一请求，实际却不断改变条件。host 为物理调用提供一个 identity 对象，用 WeakMap 保留该次预算；真正的新调用使用新身份。
 
-## Provider 与模型 ID 的边界
+## 沿固定源码逐段拆解
 
 @source model-identity
 
-解析器只用第一个 `/` 分开 Provider 与后续 modelId。因此模型本身包含 `/` 时，其余部分仍保留。缺少 Provider、缺少模型名和没有分隔符都是不同于合法引用的输入。
+### 只用第一个 slash 切身份
 
-身份最终还会进入 usage、缓存、会话保存等路径。排查“按模型统计为空”时，应该沿解析结果、投影视图、记录函数到存储逐层核对字段形状。看到某个对象有 `id`，不能假定另一层也用同一字段名。
-
-## 请求预算要给输出留位置
+parseSourceQualifiedModelKey 先判断输入类型，再找到第一个分隔位置。Provider 与 modelId 都必须非空，其余 slash 保留在 modelId 中。parseProviderId 再解释来源，不是把所有 id 看成同一种配置。
 
 @source budget
 
-这个 wrapper 估算完整请求的上下文消耗，并根据 contextWindow 与 configured maxTokens 决定预算。估算包括消息、系统提示和工具定义；只统计用户文字会漏掉很大一部分输入。
+### withLocalDynamicMaxTokens 包装实际模型请求
 
-源码还用 WeakMap 和 retry identity 保留同一物理调用重试的预算。初次请求与重试若不断改变预算或请求结构，会让“重试同一请求”的假设失效。继续读 `resolveCallBudget`，可以看到 thinking 预算和紧急输出分支也需要考虑。
-
-本节验证到 wrapper 的源码设计，没有调用供应商接口；不能据此断言每家模型都会接受同一种预算或 schema。
-
-## 直接观察 usage 查询边界
+预算需要 system、messages、tools 的整体消耗，不能只看用户文本。模型窗口、configured maxTokens、thinking 和恢复分支共同影响结果。retry identity 让同一物理重试复用预算，避免重试期间出现参数漂移。
 
 @source usage
 
-@lab usage
+### 成功推理和正确归因可分别失败
 
-实验传入负数、非整数、无限值、倒置时间区间和未知分组，断言它们在查询存储前就被拒绝。`from=0` 是合法值；不能用简单 truthy 判断把它丢掉。合法分组包括 model，但该实验没有证明实际 token ledger 的 model 字段一定被正确填写。
+SessionUsageService 在进入 store 前校验时间范围与分组。from=0 不是缺省；非整数、无限值、倒置区间要明确拒绝。即使查询校验通过，也不能证明写入 ledger 的模型字段正确。
 
-这个练习连接了模型身份与可观测性：配置正确、推理成功、统计归因正确，是三个可分别失败的契约。贡献时应选清楚自己修的是哪一个。
+host 的 token 估算使用可读的字符近似，目的在于解释预算 owner 与重试身份。它不是模型 tokenizer，也没有声称精确计费。
 
-## 把模型身份拆成四个问题
-
-Provider 身份说明配置来自哪里；modelId 说明请求哪一个模型；api 协议决定怎样编码消息、工具与 thinking；认证决定凭据怎样注入。名字相似的两个模型，并不保证这四项一致。连接测试若只探测一个 URL，也不能覆盖真实推理的完整请求。
-
-`parseSourceQualifiedModelKey` 使用第一个 slash 分界：`provider/org/model` 的 modelId 应保留 `org/model`。按所有 slash split 再取第二段，会把合法模型 ID 截断。格式化与解析要成对检查，还要覆盖没有 slash、空 Provider、空 modelId、custom Provider 等输入。
-
-## 请求预算来自完整上下文
-
-system prompt、历史和工具定义都占窗口，输出与 thinking 还要预留空间。动态 maxTokens wrapper 的任务，是在真实发请求之前对这些部分进行估计并选择预算；它不负责决定历史事实应该删除哪些，那属于上下文管理。
+## 机制总览
 
 ```mermaid
 flowchart TD
@@ -52,24 +38,44 @@ flowchart TD
   W --> T[重试使用同一物理调用身份]
 ```
 
-对重试尤其要谨慎。一次物理请求失败后，wrapper 可以按 retry identity 复用预算，避免每次重试把本来相同的输入变成不同实验。业务上“再问一次”与传输层“重试同一次”应有不同身份；成本和错误统计也依赖这个区分。
+## 接入贯穿项目
 
-## 配置、成功推理和正确统计可以分别失败
+@implementation 03-models
 
-假设模型回答正确，但 usage 页按 model 分组为空。先检查写入 ledger 时使用的模型身份，再看查询参数和返回投影。不要因为推理成功便排除身份映射错误；也不要一看到统计为空便修改 API 适配。
+### 逐步跟踪本章实现
 
-本章 usage 实验验证的是查询边界：无效时间范围应在到达存储之前被拒绝，合法的零起点不能被 truthy 判断丢掉。存储端口为 fake，因此它没有验证数据库聚合 SQL 或实际 token 记录。
+parseModelKey 找第一个斜杠，前半是 providerId，后半完整保留为 modelId。因此 `provider/team/model` 的模型 id 是 `team/model`，按 split 后只取前两项会截断合法身份。没有分隔符或任何一侧为空则返回 undefined，不制造默认归属。
 
-## 一份可执行的请求排查清单
+BudgetResolver 用请求对象 identity 作 WeakMap key。相同 identity 的 retry 读取已经决定的预算，即使配置后来变化也不重算；下一次模型调用用新的 identity，就按新请求大小重新计算。预算的 owner 是一次调用，而不是字符串相同的模型名或整个会话。
 
-为失败请求记录 Provider、api 类型、去除凭据后的端点、modelId、角色序列、tool_use/result 配对、工具 schema 摘要、输出与 thinking 预算。先用不含工具的短输入排除认证与基础协议，再加入一个工具，最后恢复长历史。
+估算输入后，maxTokens 取配置上限和窗口剩余量中的较小值；thinking 必须非负并严格小于输出预算。资源不足时先拒绝请求，避免发送一个必然无效的配置。本课按字符估算，验证重试一致性和范围约束，不能用该值承诺真实 Provider 的 token 计费。
 
-400 不是“模型坏了”的充分证据：协议不匹配、schema、thinking 限制和消息配对都可能导致它。修复时应定位具体构造分支，用离线结构断言覆盖，再按条件做真实调用。
+## 运行本章实验
 
-## 练习：先定义你正在改哪条契约
+```bash
+node --disable-warning=ExperimentalWarning labs/chapters/03-models.mjs
+```
 
-为 `provider/org/model` 写身份解析预期；为大 system prompt、小用户输入的请求估算哪些部分容易漏算；为“推理成功但 usage 归因为空”画出从 resolution 到 ledger 再到查询的字段流。验收时应分别指出哪个测试验证纯函数、哪个需要 fake storage、哪个需要真实 Provider。
+@experiment 03-models
 
-::: interview 模型接口返回 400 时，为什么不能马上说“模型坏了”？
-400 可能来自请求协议、工具 schema、thinking 参数、工具消息配对或长度预算。先保存可脱敏的请求结构和具体状态，确认 Provider、端点与协议，再用最小输入复现。修复应该覆盖实际构造请求的路径，并用离线契约测试与必要的实时调用分别提供证据。
+## 逐项解释实验结果
+
+观察 naive=org 与 actual=org/model。相同 identity 返回同一份预算对象；新对象重新估算；窗口耗尽时在 Provider 前抛错。实验输出保留输入估算和输出上限，便于自己计算。
+
+如果请求失败，应先定位是身份、协议、认证还是预算，不用“模型坏了”覆盖所有 400。真实 Provider 验证需要单独保存去凭据结构。
+
+## 继续动手与验收
+
+为自定义 Provider 和带两个 slash 的模型补用例。再把工具 schema 增大，证明预算估算发生变化；使用相同 retry identity 时解释为什么结果保持不变，以及何时应该换身份。
+
+::: interview 为什么模型身份只按第一个 slash 分割？
+模型 key 按第一个斜杠切分，后半可以继续包含斜杠。一次调用的重试复用同一预算身份，新调用才重算；窗口不足或 thinking 越界应在请求之前拒绝。字符估算验证范围，不能替代真实 tokenizer。
+:::
+
+::: interview 重试为什么需要物理调用身份？
+同一次传输重试应保留预算与请求前提。业务上新问一次是新身份；把二者混合会造成预算漂移、归因错误和不清楚的成本统计。
+:::
+
+::: interview 推理成功为什么不能证明 usage 归因正确？
+配置解析、请求执行、ledger 写入与统计查询是不同路径。应沿具体字段追踪，分别用结构测试、存储测试与实际服务验证。
 :::
