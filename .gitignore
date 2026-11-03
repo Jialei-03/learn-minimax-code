@@ -1,0 +1,11 @@
+node_modules/
+site/dist/
+.cache/
+.env
+.env.*
+!.env.example
+.DS_Store
+.codex/
+.claude/
+.worktrees/
+*.log

@@ -1,0 +1,23 @@
+{
+  "name": "learn-minimax-code",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "读懂 MiniMax Code：固定源码、离线实验、工程对照与第一次开源贡献",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "setup:source": "node scripts/setup-source.mjs",
+    "lab": "node --disable-warning=ExperimentalWarning labs/run.mjs",
+    "check": "node --disable-warning=ExperimentalWarning site/build.mjs --check",
+    "build": "node --disable-warning=ExperimentalWarning site/build.mjs",
+    "serve": "node site/serve.mjs",
+    "map:generate": "node scripts/engineering-map.mjs --write"
+  },
+  "devDependencies": {
+    "markdown-it": "14.1.0",
+    "shiki": "3.13.0"
+  },
+  "license": "MIT"
+}

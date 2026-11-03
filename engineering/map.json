@@ -1,0 +1,135 @@
+{
+  "title": "MiniMax Code 工程地图",
+  "source": {
+    "repo": "https://github.com/MiniMax-AI/minimax-code",
+    "commit": "6e062ae8ca365db34b93a7cdc96ffda3a8b9fffc",
+    "version": "0.7.2",
+    "directory": "../minimax-code-source",
+    "env": "MINIMAX_SRC",
+    "observedDate": "2026-11-03",
+    "scope": "public TUI, headless CLI, ACP and distribution tooling; not the full Desktop or cloud implementation",
+    "contributionPolicy": "collaborators_only; external contributors discuss proposals through issues first"
+  },
+  "edgeSemantics": "主题分类与实现入口；不是完整调用图",
+  "groups": [
+    {
+      "label": "产品入口",
+      "nodes": [
+        {
+          "label": "TUI / exec / ACP",
+          "file": "packages/tui/src/cli/program.ts",
+          "anchor": "export function createTuiProgram",
+          "span": 43
+        },
+        {
+          "label": "CliService 门面",
+          "file": "packages/local-runtime-v2/src/local/cli-service.ts",
+          "anchor": "export class CliService",
+          "span": 30
+        }
+      ]
+    },
+    {
+      "label": "Turn 与内核",
+      "nodes": [
+        {
+          "label": "每轮装配",
+          "file": "packages/agent-core/src/pi-turn-runner/pi-turn-runner.ts",
+          "anchor": "// Step 1: Build state",
+          "span": 39
+        },
+        {
+          "label": "Pi Agent",
+          "file": "packages/agent-core/src/pi-turn-runner/agent.ts",
+          "anchor": "export function newAgent",
+          "span": 29
+        }
+      ]
+    },
+    {
+      "label": "模型与工具",
+      "nodes": [
+        {
+          "label": "请求预算",
+          "file": "packages/local-runtime-v2/src/service/model-system/resolution/dynamic-max-tokens.ts",
+          "anchor": "export function withLocalDynamicMaxTokens",
+          "span": 29
+        },
+        {
+          "label": "工具生命周期",
+          "file": "packages/agent-core/src/pi-turn-runner/tools.ts",
+          "anchor": "export function setToolHooks",
+          "span": 39
+        }
+      ]
+    },
+    {
+      "label": "上下文与会话",
+      "nodes": [
+        {
+          "label": "记忆注入",
+          "file": "packages/local-runtime-v2/src/service/turn-system/agent-host/preparation/prompt-blocks.ts",
+          "anchor": "export function buildMemoryTailBlock",
+          "span": 22
+        },
+        {
+          "label": "Checkpoint 协议",
+          "file": "packages/local-runtime-v2/src/service/turn-system/compaction/algorithm/checkpoint-protocol.ts",
+          "anchor": "export function parseCheckpointHeadings",
+          "span": 24
+        }
+      ]
+    },
+    {
+      "label": "权限与路径",
+      "nodes": [
+        {
+          "label": "本地检查器",
+          "file": "packages/local-runtime-v2/src/service/permission/decision/checkers.ts",
+          "anchor": "export function evaluateLocalPermissionCheck",
+          "span": 29
+        },
+        {
+          "label": "路径分类",
+          "file": "packages/tui/src/acp/paths.ts",
+          "anchor": "export function isTuiAcpAbsolutePath",
+          "span": 3
+        }
+      ]
+    },
+    {
+      "label": "插件与发现",
+      "nodes": [
+        {
+          "label": "Skill 解析",
+          "file": "packages/local-runtime-v2/src/service/plugin-system/skill/frontmatter.ts",
+          "anchor": "export function parseSkillFrontmatter",
+          "span": 25
+        },
+        {
+          "label": "MCP generation",
+          "file": "packages/local-runtime-v2/src/service/plugin-system/mcp/generation-registry.ts",
+          "anchor": "export class PluginCapabilityGenerationRegistry",
+          "span": 44
+        }
+      ]
+    },
+    {
+      "label": "队列与 SDK",
+      "nodes": [
+        {
+          "label": "队列状态",
+          "file": "packages/local-runtime-v2/src/service/session-system/queue/service.ts",
+          "anchor": "export class QueueService {",
+          "span": 37
+        },
+        {
+          "label": "事件归并",
+          "file": "packages/code-sdk/src/items.ts",
+          "anchor": "export class ItemAccumulator",
+          "span": 46
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "repo": "https://github.com/MiniMax-AI/minimax-code",
+  "commit": "6e062ae8ca365db34b93a7cdc96ffda3a8b9fffc",
+  "version": "0.7.2",
+  "directory": "../minimax-code-source",
+  "env": "MINIMAX_SRC",
+  "observedDate": "2026-11-03",
+  "scope": "public TUI, headless CLI, ACP and distribution tooling; not the full Desktop or cloud implementation",
+  "contributionPolicy": "collaborators_only; external contributors discuss proposals through issues first"
+}

@@ -1,0 +1,116 @@
+{
+  "scope": {
+    "file": "docs/architecture.md",
+    "anchor": "# Source boundaries",
+    "lines": 19,
+    "note": "公开发行版的职责边界"
+  },
+  "cli": {
+    "file": "packages/tui/src/cli/program.ts",
+    "anchor": "export function createTuiProgram",
+    "lines": 43,
+    "note": "命令注册与注入的执行入口"
+  },
+  "bridge": {
+    "file": "packages/local-runtime-v2/src/local/cli-service.ts",
+    "anchor": "export class CliService",
+    "lines": 30,
+    "note": "进程内 Application 门面"
+  },
+  "runner": {
+    "file": "packages/agent-core/src/pi-turn-runner/pi-turn-runner.ts",
+    "anchor": "// Step 1: Build state",
+    "lines": 39,
+    "note": "每个 Turn 的状态装配"
+  },
+  "agent": {
+    "file": "packages/agent-core/src/pi-turn-runner/agent.ts",
+    "anchor": "export function newAgent",
+    "lines": 29,
+    "note": "把产品配置和历史投影注入 Pi Agent"
+  },
+  "budget": {
+    "file": "packages/local-runtime-v2/src/service/model-system/resolution/dynamic-max-tokens.ts",
+    "anchor": "export function withLocalDynamicMaxTokens",
+    "lines": 29,
+    "note": "请求预算与重试预算复用"
+  },
+  "model-identity": {
+    "file": "packages/local-runtime-v2/src/service/model-system/resolution/model-key.ts",
+    "anchor": "export function parseSourceQualifiedModelKey",
+    "lines": 17,
+    "note": "Provider 和模型 ID 的身份分解"
+  },
+  "tool-hooks": {
+    "file": "packages/agent-core/src/pi-turn-runner/tools.ts",
+    "anchor": "export function setToolHooks",
+    "lines": 39,
+    "note": "工具循环与宿主钩子的接合点"
+  },
+  "memory": {
+    "file": "packages/local-runtime-v2/src/service/turn-system/agent-host/preparation/prompt-blocks.ts",
+    "anchor": "export function buildMemoryTailBlock",
+    "lines": 22,
+    "note": "记忆尾部进入请求的形式"
+  },
+  "registry": {
+    "file": "packages/agent-core/src/prompt-read.ts",
+    "anchor": "export class BoundedInternalTurnPromptReadRegistry",
+    "lines": 46,
+    "note": "有界的进程内 prompt 读取交接"
+  },
+  "checkpoint": {
+    "file": "packages/local-runtime-v2/src/service/turn-system/compaction/algorithm/checkpoint-protocol.ts",
+    "anchor": "export function parseCheckpointHeadings",
+    "lines": 24,
+    "note": "摘要提示和校验共用协议来源"
+  },
+  "permission": {
+    "file": "packages/local-runtime-v2/src/service/permission/decision/checkers.ts",
+    "anchor": "export function evaluateLocalPermissionCheck",
+    "lines": 29,
+    "note": "本地权限检查器的决策顺序"
+  },
+  "paths": {
+    "file": "packages/tui/src/acp/paths.ts",
+    "anchor": "export function isTuiAcpAbsolutePath",
+    "lines": 3,
+    "note": "跨 POSIX / Windows 的绝对路径分类"
+  },
+  "skills": {
+    "file": "packages/local-runtime-v2/src/service/plugin-system/skill/frontmatter.ts",
+    "anchor": "export function parseSkillFrontmatter",
+    "lines": 25,
+    "note": "Skill frontmatter 的格式约束"
+  },
+  "mcp-generation": {
+    "file": "packages/local-runtime-v2/src/service/plugin-system/mcp/generation-registry.ts",
+    "anchor": "export class PluginCapabilityGenerationRegistry",
+    "lines": 44,
+    "note": "插件工具快照与旧运行时租约"
+  },
+  "queue": {
+    "file": "packages/local-runtime-v2/src/service/session-system/queue/service.ts",
+    "anchor": "export class QueueService {",
+    "lines": 37,
+    "note": "队列服务与 committed store 返回值"
+  },
+  "sdk": {
+    "file": "packages/code-sdk/src/items.ts",
+    "anchor": "export class ItemAccumulator",
+    "lines": 46,
+    "note": "SDK 事件归并与快照去重"
+  },
+  "usage": {
+    "file": "packages/local-runtime-v2/src/service/session-system/usage/service.ts",
+    "anchor": "export class SessionUsageService {",
+    "lines": 55,
+    "note": "usage 查询的输入边界与存储端口"
+  },
+  "contributing": {
+    "file": "CONTRIBUTING.md",
+    "anchor": "# Contributing",
+    "lines": 17,
+    "note": "当前贡献政策与文档语言"
+  }
+}

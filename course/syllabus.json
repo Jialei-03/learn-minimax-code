@@ -1,0 +1,106 @@
+[
+  {
+    "n": 0,
+    "slug": "00-method",
+    "part": "建立证据",
+    "title": "方法：从学习到贡献",
+    "summary": "固定版本、区分开源边界，把源码结论和运行证据分开。",
+    "lab": "architecture"
+  },
+  {
+    "n": 1,
+    "slug": "01-architecture",
+    "part": "建立证据",
+    "title": "架构：三个入口，一套运行时",
+    "summary": "沿着 TUI / exec / ACP 找到 CliService、Application 和服务层。",
+    "lab": "architecture"
+  },
+  {
+    "n": 2,
+    "slug": "02-turn",
+    "part": "一次运行",
+    "title": "Turn：MiniMax 怎样装配 Pi",
+    "summary": "逐轮创建 Agent、事件桥、历史游标，以及取消后的收尾。",
+    "lab": "registry"
+  },
+  {
+    "n": 3,
+    "slug": "03-models",
+    "part": "一次运行",
+    "title": "模型：身份、适配与请求预算",
+    "summary": "模型名之外还有协议、认证、thinking、上下文和重试身份。",
+    "lab": "usage"
+  },
+  {
+    "n": 4,
+    "slug": "04-tools",
+    "part": "一次运行",
+    "title": "工具：从 schema 到有副作用的执行",
+    "summary": "把工具定义、参数、权限、执行、结果与历史配对连起来。",
+    "lab": "paths"
+  },
+  {
+    "n": 5,
+    "slug": "05-context-memory",
+    "part": "上下文与状态",
+    "title": "上下文：指令、记忆与快照",
+    "summary": "记忆是请求的一个投影；通过有界 Registry 交接同一次读取。",
+    "lab": "registry"
+  },
+  {
+    "n": 6,
+    "slug": "06-session-compaction",
+    "part": "上下文与状态",
+    "title": "会话与压缩：保存事实，重建请求",
+    "summary": "区分 canonical history、模型请求和 checkpoint 的协议约束。",
+    "lab": "checkpoint"
+  },
+  {
+    "n": 7,
+    "slug": "07-permissions",
+    "part": "控制与扩展",
+    "title": "权限与沙箱：决策和执行边界",
+    "summary": "读本地检查器，理解路径分类、授权和系统隔离的不同职责。",
+    "lab": "paths"
+  },
+  {
+    "n": 8,
+    "slug": "08-plugins-mcp",
+    "part": "控制与扩展",
+    "title": "插件、Skills、Hooks 与 MCP",
+    "summary": "从 Skill YAML 校验到 MCP capability generation 的生命周期。",
+    "lab": "registry"
+  },
+  {
+    "n": 9,
+    "slug": "09-queue-cancel",
+    "part": "控制与扩展",
+    "title": "队列、子任务与取消",
+    "summary": "忙碌会话如何接收输入；为何取消响应之后仍要检查执行状态。",
+    "lab": "registry"
+  },
+  {
+    "n": 10,
+    "slug": "10-sdk-events",
+    "part": "工程与贡献",
+    "title": "SDK：把事件流还原成结果",
+    "summary": "直接运行 ItemAccumulator，理解交错、增量、快照与 incomplete。",
+    "lab": "sdk"
+  },
+  {
+    "n": 11,
+    "slug": "11-first-contribution",
+    "part": "工程与贡献",
+    "title": "第一次贡献：复现、补丁与 PR",
+    "summary": "结合当前协作者限制，建立从问题调查到可审查补丁的路径。",
+    "lab": "usage"
+  },
+  {
+    "n": 12,
+    "slug": "12-comparison-interview",
+    "part": "工程与贡献",
+    "title": "三项目对照与实习面试",
+    "summary": "把学习转成机制解释和真实工程证据。",
+    "lab": "sdk"
+  }
+]
