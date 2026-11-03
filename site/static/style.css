@@ -453,3 +453,14 @@ figure:hover .copy, .copy:focus-visible, .copy.done { opacity: 1; }
 @media(max-width: 760px) { .roadmap-part { grid-template-columns: 1fr; gap: 6px; } }
 
 .product-icon { display: block; flex: none; width: 30px; height: 30px; object-fit: contain; }
+
+/* Diagrams are content, with a readable source fallback if JavaScript is unavailable. */
+.lesson-diagram { border: 1px solid var(--line); border-radius: 10px; padding: 22px 14px 12px; background: var(--bg-soft); overflow-x: auto; }
+.lesson-diagram pre.mermaid { background: transparent; padding: 0; margin: 0; text-align: center; white-space: pre; font-size: 13px; }
+.lesson-diagram .mermaid svg { min-width: 320px; width: 100%; height: auto; }
+.lesson-diagram figcaption { font-size: 12px; color: var(--muted); text-align: center; margin-top: 14px; }
+.lesson-diagram.diagram-error figcaption::after { content: ' · 图形未加载，保留可复制的原始定义'; }
+
+.src.lab pre.shiki { max-height: 480px; overflow: auto; }
+
+.tp-btn.primary:hover:not(:disabled) { color: var(--bg); background: var(--ink-2); border-color: var(--ink-2); }

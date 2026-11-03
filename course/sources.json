@@ -112,5 +112,29 @@
     "anchor": "# Contributing",
     "lines": 17,
     "note": "当前贡献政策与文档语言"
+  },
+  "runner-finalize": {
+    "file": "packages/agent-core/src/pi-turn-runner/pi-turn-runner.ts",
+    "anchor": "// Step 8: Finalize once the Agent stops producing events:",
+    "lines": 22,
+    "note": "事件排空、历史尾部和最终 terminal 的顺序"
+  },
+  "tool-wrapper": {
+    "file": "packages/agent-core/src/pi-turn-runner/tools.ts",
+    "anchor": "export function newRuntimeTool<",
+    "lines": 62,
+    "note": "RuntimeTool 到 Pi AgentTool 的每次调用上下文与结果投影"
+  },
+  "outbound-projection": {
+    "file": "packages/agent-core/src/pi-turn-runner/outbound-message-normalizer.ts",
+    "anchor": "export function projectAgentMessagesForModel(",
+    "lines": 42,
+    "note": "保留原历史，为模型请求做协议和图片投影"
+  },
+  "queue-contract": {
+    "file": "packages/local-runtime-v2/src/service/session-system/queue/repo/contract.ts",
+    "anchor": "export interface CommittedQueueResult<T>",
+    "lines": 5,
+    "note": "队列存储返回 value 与已提交事实"
   }
 }

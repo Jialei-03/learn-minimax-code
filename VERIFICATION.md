@@ -1,27 +1,31 @@
 # 验证记录
 
-日期：2026-11-03（Asia/Singapore）。环境：macOS，Node.js v22.22.3。
+日期：2026-11-03（Asia/Singapore）。macOS，Node.js v22.22.3。
 
-## 课程与构建
+## 实际验证
 
 | 检查 | 结果 |
 | --- | --- |
-| `npm install --ignore-scripts --no-audit --no-fund` | PASS，锁定 markdown-it 14.1.0、shiki 3.13.0 |
-| `npm run setup:source` | PASS，现有源码 HEAD 与版本锁一致，无切换和覆盖 |
-| `npm run check` | PASS，源码锚点、实验、本地页面与锚点链接有效 |
-| `npm run build` | PASS，18 页、13 章、19 个源码入口、13 道面试题 |
-| 六组课程离线实验 | PASS，构建时实际运行并嵌入结果 |
-| `git diff --cached --check` | PASS |
-| HTTP 预览 | 首页、SDK 章节、贡献页、搜索索引和交互脚本返回 200 |
-| 浏览器检查 | 首页与章节可读；全文搜索命中 ItemAccumulator；深浅主题切换、面试答案展开有效 |
+| 固定源码版本 | 0.7.2 / `6e062ae8ca365db34b93a7cdc96ffda3a8b9fffc`；读取 Git 对象 |
+| `npm run lab` | PASS，10 组：architecture、sdk、registry、usage、paths、checkpoint、generation、queue、turn、capstone |
+| `npm run check` | PASS，源码锚点、实验、页面和锚点 |
+| `npm run build` | PASS，18 页、13 章、23 个源码入口、13 道面试题 |
+| 全量本地资源检查 | 页面、资源、锚点无缺失 |
+| 浏览器逐章检查 | 13 章共 14 张 Mermaid 图全部渲染，无残留指令 |
+| SDK 回放 | 第六步识别重复 snapshot；最终 a completed、b incomplete；末步下一步禁用 |
+| 总装回放 | A aborted 后 busy 释放，R1 关闭，B 接纳；支持状态 JSON 查看 |
+| 长源码 | 可展开；长实验输出有独立滚动区域 |
+| JavaScript | `node --check site/static/app.js` PASS；播放器检查无 console warn/error |
+| `git diff --check` | PASS |
 
-源码基准：`6e062ae8ca365db34b93a7cdc96ffda3a8b9fffc`，根 workspace 0.7.2。
-具体实验输出在构建产物 `site/dist/evidence.json`，可用 `npm run build` 重建。
+课程每章包含目标、具体推导、机制图、失败反例与练习。第 12 章总装实验组合三个真实上游组件，展示热更新、取消、收尾与迟到事件。
 
 ## 证据范围
 
-课程执行的是审核过的自包含上游模块，SDK 使用合成事件，usage 使用 fake 存储端口。没有把这些结果描述为完整 CLI、数据库、真实模型、认证或多平台验收。
+SDK、Prompt Registry、usage、路径、checkpoint、MCP generation 和 QueueService 执行审核过的完整上游模块；纯相对依赖从同一个 Git 提交装载，不 mock 内部实现。使用的存储、会话读取、时钟和 runtime.close 是明确测试端口。
 
-独立贡献任务的上游验证属于另一份交付，以旁边 `minimax-code-contribution/verification/` 的实际报告为准；本课程构建成功不代表上游完整验证成功。
+turn 实验提取原始驱动函数，用 fake Agent 与错误分类端口控制输入。capstone 中的 host admission、busy 和事件归属由课程自己实现，并组合真实 PromptRegistry、GenerationRegistry、ItemAccumulator；不是生产 Session/Turn 服务的集成测试。播放器数据来自构建时运行结果，输入为合成事件。
 
-本轮更新：三个课程均使用产品原始图标；新增工程地图、Canvas 和 Mermaid。网页地图的主题筛选与源码链接已在浏览器检查，来源记录在 `site/static/brand-source.json`。
+未构建完整上游 CLI，未验证 SQLite、真实 Provider、认证、真实 MCP 或所有平台。独立贡献任务以上游 contribution checkout 自己的验证报告为准。
+
+Mermaid 11.17.2 随网站本地分发并保留许可；Markdown 解析器固定 14.3.3。产品原始图标与来源记录保持一致。

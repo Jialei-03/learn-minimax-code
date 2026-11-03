@@ -16,7 +16,8 @@
     "map:generate": "node scripts/engineering-map.mjs --write"
   },
   "devDependencies": {
-    "markdown-it": "14.1.0",
+    "markdown-it": "14.3.3",
+    "mermaid": "11.17.2",
     "shiki": "3.13.0"
   },
   "license": "MIT"

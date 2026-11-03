@@ -13,7 +13,7 @@
 ```bash
 npm install
 npm run setup:source       # 准备旁边的 minimax-code-source，已有目录不会被覆盖或切分支
-npm run lab                # 六组真实源码离线实验
+npm run lab                # 十组离线实验（含课程自写宿主）
 npm run check              # 校验版本、摘录、实验与生成页面的本地链接
 npm run build              # 生成 site/dist，实验结果实时嵌入正文
 npm run serve              # http://127.0.0.1:4323/
@@ -50,9 +50,13 @@ npm run lab -- usage         # 上游 usage Service；fake 存储端口
 npm run lab -- paths         # 上游 ACP 的 POSIX / Windows 路径分类
 npm run lab -- checkpoint    # 上游 checkpoint 标题协议解析
 npm run lab -- sdk           # 上游 ItemAccumulator；合成事件输入
+npm run lab -- turn          # 提取上游驱动函数；fake Agent 与错误分类端口
+npm run lab -- generation    # 上游 generation 与纯依赖；fake runtime.close
+npm run lab -- queue         # 上游 QueueService 与纯依赖；fake store 与时钟
+npm run lab -- capstone      # 课程宿主组合三个真实上游组件
 ```
 
-课程通过 Node 的 TypeScript transform 执行完整的、自包含上游模块，不复制改写实现，不 mock 它们的内部依赖。实验范围有限：未构建完整上游 CLI，未验证 SQLite、真实模型、认证、MCP 服务或多平台端到端行为。各章会区分源码阅读与实际执行证据。
+课程通过 Node 的 TypeScript transform 执行审核过的完整上游模块及其显式允许的纯依赖；turn 实验提取上游函数并用 fake Agent 控制生命周期。capstone 的宿主逻辑由课程编写，组合真实 Registry 与 ItemAccumulator。所有输出分别标明源码执行、测试端口和教学实现。实验范围有限：未构建完整上游 CLI，未验证 SQLite、真实模型、认证、MCP 服务或多平台端到端行为。各章会区分源码阅读与实际执行证据。
 
 ## 独立的贡献任务
 
@@ -64,9 +68,9 @@ npm run lab -- sdk           # 上游 ItemAccumulator；合成事件输入
 
 | 目录 | 用途 |
 | --- | --- |
-| `course/` | 13 章正文、目录与 19 个源码阅读入口 |
+| `course/` | 13 章正文、目录与 23 个源码阅读入口 |
 | `lab/` | 源码版本验证、Git 读取与审核过的纯模块加载 |
-| `labs/` | 六组可运行离线实验与断言 |
+| `labs/` | 十组离线实验、教学宿主与断言 |
 | `site/` | 静态阅读站、深浅主题、搜索、源码索引、面试题库与贡献页 |
 | `contribution/` | 独立贡献任务说明与上游许可 |
 | `source.lock.json` | 上游版本、提交与范围 |
@@ -80,3 +84,9 @@ MIT。阅读站样式与交互代码复用本系列 Learn Pi Agent，保留其�
 ## 工程地图与解读方法
 
 提供[源码工程地图](docs/engineering-map.md)、[可编辑 Canvas](engineering/architecture.canvas)和[工具与方法说明](docs/engineering-workflow.md)。本地阅读站顶栏的“工程地图”支持按主题筛选、缩放和打开固定源码；`npm run map:generate` 可重建。左上角使用软件官方原始图标，来源与哈希见 `site/static/brand-source.json`。
+
+## 每章的学习产出
+
+每章包含具体场景、状态与调用链、失败反例、机制图、练习和验收目标。第 10 章提供 ItemAccumulator 的逐事件回放；第 12 章提供教学宿主的十一阶段回放，覆盖热更新、取消、busy 收尾、迟到事件与下一轮结果。回放数据由构建时实际执行实验生成，输入为合成数据。
+
+图形使用本地随站分发的 Mermaid，不需要 CDN。长源码块可按需展开；章节目标和右侧目录与系列阅读体验保持一致。

@@ -133,7 +133,7 @@ for (const el of $$('.trace-player')) {
     stage.innerHTML = `<div class="tp-explain">${step.explain}</div>
       ${step.kind === 'request' ? `<div class="tp-meter">本次请求发送 ${step.messages.length} 条消息 · 约 ${chars.toLocaleString()} 字符<div class="tp-bar"><span style="width:${(chars / maxChars) * 100}%"></span></div></div>` : ''}
       <div class="tp-msgs">${step.messages.map((m, j) => msgHtml(m, fresh.has(j))).join('')}</div>
-      ${step.wire ? `<details class="tp-wire"><summary>查看真实发送的请求体（${escapeHtml(step.wireLabel ?? 'JSON')}）</summary><pre>${escapeHtml(JSON.stringify(step.wire, null, 2))}</pre></details>` : ''}`;
+      ${step.wire ? `<details class="tp-wire"><summary>${escapeHtml(step.wireSummary ?? `查看真实发送的请求体（${step.wireLabel ?? 'JSON'}）`)}</summary><pre>${escapeHtml(JSON.stringify(step.wire, null, 2))}</pre></details>` : ''}`;
     $$('.tp-steps li', el).forEach((li, j) => { li.classList.toggle('active', j === at); li.classList.toggle('done', j < at); });
     $('[data-act="prev"]', el).disabled = at === 0;
     $('[data-act="next"]', el).disabled = at === data.steps.length - 1;
@@ -155,3 +155,23 @@ for (const el of $$('.trace-player')) {
   });
   show(0);
 }
+
+// Render locally bundled Mermaid diagrams. No CDN and no network access is required.
+// Keep the original source for copying and for re-rendering after a theme change.
+const lessonDiagrams = [...document.querySelectorAll('pre.mermaid')].map(el => ({ el, source: el.textContent }));
+let diagramRender = Promise.resolve();
+function renderLessonDiagrams() {
+  diagramRender = diagramRender.catch(() => {}).then(async () => {
+    if (!lessonDiagrams.length || !window.mermaid) return;
+    const dark = document.documentElement.dataset.theme === 'dark';
+    window.mermaid.initialize({ startOnLoad: false, securityLevel: 'strict', theme: dark ? 'dark' : 'neutral', themeVariables: { fontSize: '14px' }, fontFamily: 'system-ui, sans-serif', flowchart: { htmlLabels: false, useMaxWidth: true, rankSpacing: 20, nodeSpacing: 24, padding: 8 }, sequence: { useMaxWidth: true } });
+    for (const { el, source } of lessonDiagrams) {
+      el.removeAttribute('data-processed'); el.textContent = source;
+      try { await window.mermaid.run({ nodes: [el] }); el.closest('figure').classList.remove('diagram-error'); }
+      catch { el.textContent = source; el.closest('figure').classList.add('diagram-error'); }
+    }
+  });
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', renderLessonDiagrams);
+else renderLessonDiagrams();
+document.querySelector('.theme-toggle')?.addEventListener('click', renderLessonDiagrams);

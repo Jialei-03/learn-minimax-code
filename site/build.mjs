@@ -27,7 +27,12 @@ for (const [key, spec] of Object.entries(sources)) {
   const end = Math.min(lines.length, start + spec.lines);
   excerpts.set(key, { ...spec, start: start + 1, end, code: lines.slice(start, end).join('\n'), url: sourceUrl(spec.file, start + 1, end) });
 }
-for (const name of new Set(chapters.map(c => c.lab))) labs.set(name, await runLab(name));
+const declaredLabs = new Set(chapters.map(c => c.lab));
+for (const chapter of chapters) {
+  const text = readFileSync(resolve(ROOT, `course/${chapter.slug}.md`), 'utf8');
+  for (const match of text.matchAll(/^@(?:lab|replay) ([a-z-]+)/gm)) declaredLabs.add(match[1]);
+}
+for (const name of declaredLabs) labs.set(name, await runLab(name));
 
 function render(body, chapter) {
   const headings = [];
@@ -49,14 +54,46 @@ function render(body, chapter) {
     if (!ex) throw new Error(`${chapter.slug}: 不存在的源码 ${key}`);
     citations.push({ chapter, key, ...ex });
     const lang = ex.file.endsWith('.ts') ? 'ts' : 'markdown';
-    return '\n\n' + `<figure class="src"><figcaption><span class="src-badge pi">MiniMax ${LOCK.version}</span><a class="src-path" href="${ex.url}" target="_blank" rel="noopener">${esc(ex.file)}:${ex.start}–${ex.end}</a><button class="copy" type="button">复制</button></figcaption>${highlight(ex.code, lang, ex.start)}</figure>`.replace(/\n\s*\n/g, '\n') + '\n\n';
+    const collapse = ex.end - ex.start > 22;
+    return '\n\n' + `<figure class="src${collapse ? ' collapsible collapsed' : ''}"><figcaption><span class="src-badge pi">MiniMax ${LOCK.version}</span><a class="src-path" href="${ex.url}" target="_blank" rel="noopener">${esc(ex.file)}:${ex.start}–${ex.end}</a><button class="copy" type="button">复制</button></figcaption>${highlight(ex.code, lang, ex.start)}${collapse ? `<button class="expand" type="button">展开全部 ${ex.end - ex.start + 1} 行</button>` : ''}</figure>`.replace(/\n\s*\n/g, '\n') + '\n\n';
   });
   body = body.replace(/^@lab ([a-z-]+)[ \t]*$/gm, (_, name) => {
     if (!labs.has(name)) throw new Error(`实验未声明：${name}`);
-    return `\n\n<figure class="src lab"><figcaption>离线实测 · npm run lab -- ${esc(name)}</figcaption>${highlight(JSON.stringify(labs.get(name), null, 2), 'json')}</figure>\n\n`;
+    const { trace, ...report } = labs.get(name);
+    return `\n\n<figure class="src lab"><figcaption>离线实测${trace ? '摘要' : ''} · npm run lab -- ${esc(name)}</figcaption>${highlight(JSON.stringify(report, null, 2), 'json')}</figure>\n\n`;
   });
+  body = body.replace(/^@replay (sdk|capstone)[ \t]*$/gm, (_, name) => {
+    const result = labs.get(name);
+    const data = name === 'capstone' ? {
+      title: '教学宿主：取消、热更新与下一轮',
+      subtitle: `课程宿主 + 真实上游组件 · 合成 IO · ${LOCK.commit.slice(0, 7)}`,
+      steps: result.timeline.map((row, i) => ({
+        kind: row.phase === 'completed' || row.phase === 'aborted' ? 'end' : 'tool',
+        label: `${i + 1}. ${row.phase}`, explain: row.note,
+        messages: [{ role: 'system', text: `active Turn: ${row.active ?? 'idle'}\n当前能力代: ${row.revision}\n已关闭: ${row.closed.join(', ') || '无'}` }],
+        fresh: [0], wire: row, wireSummary: '查看本步教学宿主状态 JSON',
+      })),
+    } : {
+      title: '逐步观察 ItemAccumulator',
+      subtitle: `真实函数 · 合成事件 · ${LOCK.commit.slice(0, 7)}`,
+      steps: result.trace.map((row, i) => ({
+        kind: row.event.type === 'item.completed' ? 'end' : 'response',
+        label: `${i + 1}. ${row.event.type.replace('item.', '')} ${row.event.item.id}`,
+        explain: row.accepted ? `接受事件。按 id 更新状态；${row.event.item.contentDelta !== undefined ? 'delta 追加，重复文字也保留。' : row.event.type === 'item.completed' ? '此 item 已完成，去掉 incomplete。' : 'snapshot 表示当前完整状态。'}` : '重复 snapshot：apply 返回 false，最终状态不变。',
+        messages: row.items.map(item => ({ role: 'assistant', text: `${item.id} · ${item.type}\n${item.text ?? ''}\n${item.incomplete ? 'incomplete: true' : 'completed'}` })),
+        fresh: row.items.flatMap((item, n) => item.id === row.event.item.id && row.accepted ? [n] : []),
+        wire: row.event, wireSummary: '查看本步合成输入 JSON',
+      })),
+    };
+    return `\n\n<div class="trace-player"><script type="application/json">${JSON.stringify(data).replace(/</g, '\\u003c')}</script></div>\n\n`;
+  });
+  const fence = renderer.renderer.rules.fence;
+  renderer.renderer.rules.fence = (tokens, i, options, env, self) => {
+    if (tokens[i].info.trim() === 'mermaid') return `<figure class="diagram lesson-diagram"><pre class="mermaid">${esc(tokens[i].content)}</pre><figcaption>机制图 · 依据本章固定源码整理</figcaption></figure>`;
+    return fence(tokens, i, options, env, self);
+  };
   const html = renderer.render(body).replace(/href="([0-9]{2}-[a-z-]+)\.md(#[^"]*)?"/g, 'href="$1.html$2"');
-  if (/^@(source|lab) /m.test(html)) throw new Error(`存在未展开指令：${chapter.slug}`);
+  if (/^@(source|lab|replay) /m.test(html)) throw new Error(`存在未展开指令：${chapter.slug}`);
   if (/^## /m.test(html.replace(/<pre[\s\S]*?<\/pre>/g, ''))) throw new Error(`标题没有被渲染：${chapter.slug}`);
   return { html, headings };
 }
@@ -69,7 +106,7 @@ function shell(title, content, { chapter, headings = [], home = false } = {}) {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} · Learn MiniMax Code</title><meta name="description" content="读懂 MiniMax Code：固定源码、离线实验、三项目对照与第一次开源贡献"><link rel="icon" href="${base}static/product-icon.png"><link rel="stylesheet" href="${base}static/style.css"><script>try{document.documentElement.dataset.theme=localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')}catch{}</script></head><body>
 <header class="topbar"><button class="icon-btn nav-toggle" aria-label="打开课程目录">☰</button><a class="brand" href="${base}index.html"><img class="product-icon" src="${base}static/product-icon.png" width="30" height="30" alt="MiniMax Code 原始图标"><span class="brand-name">Learn MiniMax Code</span></a><div class="topbar-actions"><button class="search-btn" data-search-open>搜索课程 <kbd>⌘K</kbd></button><a class="top-link" href="${base}contribution.html">首次贡献</a><a class="top-link" href="${base}interview.html">面试题</a><a class="top-link" href="${base}sources.html">源码索引</a><a class="top-link" href="${base}map.html">工程地图</a><button class="icon-btn theme-toggle" aria-label="切换深浅主题">◐</button></div></header>
 <div class="shell${toc ? ' has-toc' : ''}"><nav class="sidebar" aria-label="课程目录"><div class="sidebar-inner">${nav}<p class="nav-pin">MiniMax Code ${LOCK.version}<br><a href="${LOCK.repo}/tree/${LOCK.commit}">${LOCK.commit.slice(0, 7)} · MIT</a><br>基准：${LOCK.observedDate}</p></div></nav><main id="main">${content}</main>${toc}</div>
-<div class="search-dialog" hidden role="dialog" aria-modal="true" aria-label="搜索课程"><div class="search-panel"><input type="search" aria-label="搜索" placeholder="搜索机制、章节或源码……"><ol class="search-results"></ol><p class="search-hint">↑ ↓ 选择 · Enter 打开 · Esc 关闭</p></div></div><div class="scrim" hidden></div><script type="module" src="${base}static/app.js"></script></body></html>`;
+<div class="search-dialog" hidden role="dialog" aria-modal="true" aria-label="搜索课程"><div class="search-panel"><input type="search" aria-label="搜索" placeholder="搜索机制、章节或源码……"><ol class="search-results"></ol><p class="search-hint">↑ ↓ 选择 · Enter 打开 · Esc 关闭</p></div></div><div class="scrim" hidden></div><script defer src="${base}static/mermaid.min.js"></script><script type="module" src="${base}static/app.js"></script></body></html>`;
 }
 
 const pages = new Map();
@@ -79,13 +116,14 @@ for (const chapter of chapters) {
   const { html, headings } = render(body, chapter);
   const prev = chapters[chapter.n - 1];
   const next = chapters[chapter.n + 1];
-  const article = `<article class="chapter"><header class="chapter-head"><p class="eyebrow">${esc(chapter.part)} · 第 ${chapter.n} 章</p><h1>${esc(chapter.title)}</h1><p class="lede">${esc(chapter.summary)}</p><p class="chapter-meta">固定源码 ${LOCK.version} · 阅读＋源码追踪＋离线观察</p></header><div class="prose">${html}</div><nav class="pager">${prev ? `<a href="${prev.slug}.html">← ${esc(prev.title)}</a>` : '<span></span>'}${next ? `<a href="${next.slug}.html">${esc(next.title)} →</a>` : '<span></span>'}</nav></article>`;
+  const objectives = `<div class="objectives"><p class="objectives-title">本章目标</p><ul>${chapter.learn.map(goal => `<li>${esc(goal)}</li>`).join('')}</ul><p class="objectives-build"><span>动手产出</span>${esc(chapter.build)}</p></div>`;
+  const article = `<article class="chapter"><header class="chapter-head"><p class="eyebrow">${esc(chapter.part)} · 第 ${chapter.n} 章</p><h1>${esc(chapter.title)}</h1><p class="lede">${esc(chapter.summary)}</p>${objectives}<p class="chapter-meta">${esc(chapter.time)} · 源码 ${LOCK.version} · 阅读＋推演＋实验</p></header><div class="prose">${html}</div><nav class="pager">${prev ? `<a href="${prev.slug}.html">← ${esc(prev.title)}</a>` : '<span></span>'}${next ? `<a href="${next.slug}.html">${esc(next.title)} →</a>` : '<span></span>'}</nav></article>`;
   pages.set(`chapters/${chapter.slug}.html`, shell(chapter.title, article, { chapter, headings }));
   search.push({ url: `chapters/${chapter.slug}.html`, chapter: String(chapter.n).padStart(2, '0'), title: chapter.title, text: html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ') });
 }
 
 const roadmap = parts.map(part => `<section class="roadmap-part"><h3>${esc(part)}</h3><ol>${chapters.filter(c => c.part === part).map(c => `<li class="ready"><a href="chapters/${c.slug}.html"><span class="chapter-num">${String(c.n).padStart(2, '0')}</span><span><strong>${esc(c.title)}</strong><small>${esc(c.summary)}</small></span><span class="roadmap-arrow">→</span></a></li>`).join('')}</ol></section>`).join('');
-pages.set('index.html', shell('读懂它，然后贡献它', `<div class="home"><section class="hero"><div><p class="eyebrow">Agent 工程课 · 第三部 · 源码 ${LOCK.version}</p><h1>读懂 MiniMax Code<br><span class="hero-sub">然后，贡献一处改进。</span></h1><p class="hero-lead">从 Pi 的内核，走到产品级 Coding Agent。沿真实调用链读源码，用离线实验观察边界，再把一个可复现的问题变成可审查的补丁。</p><div class="hero-actions"><a class="btn primary" href="chapters/00-method.html">开始学习</a><a class="btn-link" href="contribution.html">进入贡献任务 →</a></div></div><aside class="course-terminal" aria-label="学习与贡献路线"><p><span>MINIMAX CODE</span> / SOURCE MAP</p><pre>你的输入\n  ↓\nTUI · exec · ACP\n  ↓\nCliService → Application\n  ↓\nSession · Turn · Agent\n  ↓\nPi engine → model · tools</pre><footer>source → reproduce → test → patch → review</footer></aside></section><section class="pillars"><article><span class="pillar-num">01</span><h3>读真实源码</h3><p>${excerpts.size} 个阅读入口，链接固定到 ${LOCK.commit.slice(0, 7)}。</p></article><article><span class="pillar-num">02</span><h3>运行真实函数</h3><p>${labs.size} 组离线实验，保留输入、断言和结论边界。</p></article><article><span class="pillar-num">03</span><h3>对照已有学习</h3><p>连接 Learn Pi Agent 的实现与 Learn Claude Code 的观察。</p></article><article><span class="pillar-num">04</span><h3>准备首次贡献</h3><p>从复现到回归测试，按上游当前贡献政策推进。</p></article></section><section class="quickstart"><h2>先把实验跑起来</h2><p>Node.js 22.19+；课程构建不需要 API Key，也不会启动真实模型。</p><pre><code>npm install\nnpm run setup:source\nnpm run lab\nnpm run build\nnpm run serve</code></pre><p>贡献政策核实于 ${LOCK.observedDate}：上游目前只接收协作者 PR，外部贡献先通过 Issue 讨论。<a href="${sourceUrl('CONTRIBUTING.md')}">查看官方政策</a>。</p></section><section class="roadmap"><div class="roadmap-head"><h2>课程路线</h2><p>${chapters.length} 章 · 先建立机制理解，再形成贡献证据</p></div>${roadmap}</section></div>`, { home: true }));
+pages.set('index.html', shell('读懂它，然后贡献它', `<div class="home"><section class="hero"><div><p class="eyebrow">Agent 工程课 · 第三部 · 源码 ${LOCK.version}</p><h1>读懂 MiniMax Code<br><span class="hero-sub">然后，贡献一处改进。</span></h1><p class="hero-lead">从 Pi 的内核，走到产品级 Coding Agent。沿真实调用链读源码，用离线实验观察边界，再把一个可复现的问题变成可审查的补丁。</p><div class="hero-actions"><a class="btn primary" href="chapters/00-method.html">开始学习</a><a class="btn-link" href="contribution.html">进入贡献任务 →</a></div></div><aside class="course-terminal" aria-label="学习与贡献路线"><p><span>MINIMAX CODE</span> / SOURCE MAP</p><pre>你的输入\n  ↓\nTUI · exec · ACP\n  ↓\nCliService → Application\n  ↓\nSession · Turn · Agent\n  ↓\nPi engine → model · tools</pre><footer>source → reproduce → test → patch → review</footer></aside></section><section class="pillars"><article><span class="pillar-num">01</span><h3>读真实源码</h3><p>${excerpts.size} 个阅读入口，链接固定到 ${LOCK.commit.slice(0, 7)}。</p></article><article><span class="pillar-num">02</span><h3>运行真实函数</h3><p>${labs.size} 组离线实验，保留输入、断言和结论边界。</p></article><article><span class="pillar-num">03</span><h3>对照已有学习</h3><p>连接 Pi 的从零实现与 Claude Code 的源码、实验。</p></article><article><span class="pillar-num">04</span><h3>准备首次贡献</h3><p>从复现到回归测试，按上游当前贡献政策推进。</p></article></section><section class="quickstart"><h2>先把实验跑起来</h2><p>Node.js 22.19+；课程构建不需要 API Key，也不会启动真实模型。</p><pre><code>npm install\nnpm run setup:source\nnpm run lab\nnpm run build\nnpm run serve</code></pre><p>贡献政策核实于 ${LOCK.observedDate}：上游目前只接收协作者 PR，外部贡献先通过 Issue 讨论。<a href="${sourceUrl('CONTRIBUTING.md')}">查看官方政策</a>。</p></section><section class="roadmap"><div class="roadmap-head"><h2>课程路线</h2><p>${chapters.length} 章 · 先建立机制理解，再形成贡献证据</p></div>${roadmap}</section></div>`, { home: true }));
 
 const sourceRows = [...excerpts.entries()].map(([key, ex]) => `<tr><td><a href="${ex.url}"><code>${esc(ex.file)}</code></a></td><td>${esc(ex.note)}</td><td>${[...new Set(citations.filter(c => c.key === key).map(c => c.chapter.slug))].map(slug => `<a href="chapters/${slug}.html">${slug.slice(0, 2)}</a>`).join(' · ')}</td></tr>`).join('');
 const plain = (title, body) => shell(title, `<article class="chapter plain-page"><h1>${esc(title)}</h1><div class="prose">${body}</div></article>`);
@@ -105,7 +143,7 @@ for (const [path, html] of pages) {
     if (dest.endsWith('.html')) {
       if (!pages.has(dest)) throw new Error(`${path}: 页面不存在 ${dest}`);
       if (url.hash && !pages.get(dest).includes(`id="${decodeURIComponent(url.hash.slice(1))}"`)) throw new Error(`${path}: 锚点不存在 ${target}`);
-    } else if (!['static/style.css', 'static/app.js', 'static/product-icon.png', 'engineering/architecture.canvas', 'engineering/engineering-map.md'].includes(dest)) throw new Error(`${path}: 未知资源 ${dest}`);
+    } else if (!['static/style.css', 'static/app.js', 'static/mermaid.min.js', 'static/product-icon.png', 'engineering/architecture.canvas', 'engineering/engineering-map.md'].includes(dest)) throw new Error(`${path}: 未知资源 ${dest}`);
   }
 }
 if (!process.argv.includes('--check')) {
@@ -115,6 +153,8 @@ if (!process.argv.includes('--check')) {
   writeFileSync(resolve(out, 'engineering/architecture.canvas'), MAP.canvas);
   writeFileSync(resolve(out, 'engineering/engineering-map.md'), MAP.markdown);
   cpSync(resolve(ROOT, 'site/static'), resolve(out, 'static'), { recursive: true });
+  cpSync(resolve(ROOT, 'node_modules/mermaid/dist/mermaid.min.js'), resolve(out, 'static/mermaid.min.js'));
+  cpSync(resolve(ROOT, 'node_modules/mermaid/LICENSE'), resolve(out, 'static/mermaid-LICENSE.txt'));
   writeFileSync(resolve(out, 'static/search.json'), JSON.stringify(search));
   writeFileSync(resolve(out, 'evidence.json'), JSON.stringify({ source: LOCK, pages: pages.size, excerpts: excerpts.size, citations: citations.length, interviews: interviews.length, labs: Object.fromEntries(labs) }, null, 2));
 }

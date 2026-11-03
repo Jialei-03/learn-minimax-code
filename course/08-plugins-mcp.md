@@ -33,6 +33,45 @@
 
 公开 Issue #570 就报告过这种竞态，并由原作者提供补丁线索。本课程把它作为阅读案例；独立贡献任务需要检查现有提案，避免把已有修复当成自己的首次贡献。
 
+## 一个真实的热更新竞态
+
+Turn A 捕获了插件 R1 的 search 工具并开始执行；用户更新插件后，Turn B 应该看见 R2。若 replace 的同时关闭 R1，A 的工具连接会在半途中消失；若永不关闭 R1，长时间使用就会积累旧连接。
+
+GenerationRegistry 用 revision 识别一代能力，用 lease 记录还有谁使用。replace 把旧代标成 retired；release 让引用减一；只有 retired 且无租约，才启动清理。新版本发布与旧资源销毁被分成两个时刻。
+
+```mermaid
+sequenceDiagram
+  participant A as Turn A
+  participant G as GenerationRegistry
+  participant U as 插件更新
+  A->>G: retain R1
+  U->>G: replace R2
+  Note over G: R1 retired，但 lease 仍为 1
+  A->>G: release R1
+  G->>G: close R1 后运行 finalizers
+  Note over G: R2 继续作为 current
+```
+
+@lab generation
+
+这里实际执行完整 Registry 及其纯依赖模块，只把 runtime.close 换成记录器。替换时旧代没有关闭，释放后关闭一次，dispose 还会清理新代。关闭 R1 与关闭 R2 可以交错，finalizer 只要求在所属 R1 close 之后，不能据一份输出臆造所有代之间的全局串行保证。
+
+## lease 是责任，必须对应释放
+
+捕获快照就 retain，Turn 在任何退出路径都要 release。缺一次 release，旧代就一直留着；提前 release，会把仍在使用的连接关掉。测试应覆盖正常结束、模型报错、用户取消和更新过程中退出，不只检查 retain/release 两个方法各自能调用。
+
+Registry 的 dispose 是进程或系统级收尾，不是每个 Turn 都应调用的快捷清理。它会把代标退休、清空 lease 并等清理任务。把它放在某个任务 finally 中，会影响其他还在运行的任务。
+
+## Skill 校验与 MCP 生命周期怎样关联
+
+Plugin 可以分发 Skill、Hook 和 MCP；这些能力不共享同一个“完成发现”的时刻。Skill YAML 先要解析、拒绝重复键与不合格结构；MCP 要完成连接和 tools/list；最终能力视图还要发布给 Turn。配置 enabled 只是起点。
+
+遇到“第一轮没有工具，第二轮出现”时，按 revision 记录连接完成、发现结果发布、Turn 捕获与请求投影四个时间点。若没有这份时间线，延迟启动只是把竞态隐藏起来。
+
+## 练习：写一个旧代存活测试
+
+retain R1 两次，replace R2，release 一次，断言 R1 尚未关闭；release 第二次，断言关闭一次；重复 release 不应再次关闭；dispose 后 R2 关闭。把 close 人为延迟，再确认 finalizer 仍在 close 后面。它是一个明确的资源生命周期测试，不需要真实 MCP 服务。
+
 ::: interview 热更新插件时，为什么需要 capability generation？
 正在运行的 Turn 需要继续使用它捕获时的工具契约和连接。用 revision 区分代，用 lease 保留仍被使用的旧运行时，等最后一个使用者结束再清理。验证不能只看新版本工具列表，还需要检查旧 Turn 是否能完成以及资源是否最终释放。
 :::
