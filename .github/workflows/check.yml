@@ -13,4 +13,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - run: npm run setup:source
+      # 对照摘录：Pi v1.5.0（固定提交）和 learn-pi-agent 的 mox
+      - run: git clone --quiet https://github.com/earendil-works/pi.git ../pi-v1.5.0 && git -C ../pi-v1.5.0 checkout --quiet f9a26365568127461c47a07a37dcb42c140a3ac5
+      - run: git clone --quiet --depth 1 https://github.com/Jialei-03/learn-pi-agent.git ../learn-pi-agent
+      - run: npm run verify:course
       - run: npm run build
