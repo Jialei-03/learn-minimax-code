@@ -169,6 +169,105 @@ Pi v1.5.0 的重试长这样：
 
 它按状态码判断（408、409、429、≥500，或没有状态码；服务端的 `x-should-retry` 头优先），并且只包住“发出请求、拿到响应”这一步，响应头到了、流开始之后就不再管。MiniMax 的规则两头都不一样：官方账号不重试普通 5xx，重试的边界也不是响应头，而是下面的“第一个可见输出”。
 
+::: steps 一次 529：包装层与重试怎样配合
+--- Pi 的 Agent 要一次回复，请求先进最外面的 `withLLMRetry`。每次尝试都带着 `maxRetries: 0`，让 Pi 自己的重试关掉，也带着 `callIdentity`（同一次逻辑调用的所有物理请求共用，预算靠它钉住）。
+sequenceDiagram
+  participant A as Pi Agent
+  participant R as withLLMRetry
+  participant W as withLLMStreamTimeouts
+  participant S as 服务商
+  participant U as 界面
+  rect rgb(255, 237, 224)
+  A->>R: 要一次模型回复
+  Note over R: 每次尝试 maxRetries 为 0 · 带 callIdentity
+  R->>W: 第 1 次物理请求
+  end
+--- 第 1 次物理请求穿过 `withLLMStreamTimeouts`，首包计时器（300 秒）开始。响应头到了，`start` 事件上来，随后流里报 529。`preflightAttempt` 把事件放进 `buffered`，不放给调用方；`start` 不算提交。
+sequenceDiagram
+  participant A as Pi Agent
+  participant R as withLLMRetry
+  participant W as withLLMStreamTimeouts
+  participant S as 服务商
+  participant U as 界面
+  A->>R: 要一次模型回复
+  Note over R: 每次尝试 maxRetries 为 0 · 带 callIdentity
+  R->>W: 第 1 次物理请求
+  rect rgb(255, 237, 224)
+  W->>S: 请求 · 首包计时器 300 秒开始
+  S-->>W: 响应头到了 · start 事件
+  S-->>W: 流里报 529，屏幕上还没有字
+  W-->>R: 事件原样上交 · 先进 buffered 缓冲
+  end
+--- `failureResult` 判断：用户没取消，没有可见输出，官方账号的白名单里有 529。重试，先发一个 `waiting`（带延迟和 `nextRetryAtMs`），界面据此显示“稍后重试”。
+sequenceDiagram
+  participant A as Pi Agent
+  participant R as withLLMRetry
+  participant W as withLLMStreamTimeouts
+  participant S as 服务商
+  participant U as 界面
+  A->>R: 要一次模型回复
+  Note over R: 每次尝试 maxRetries 为 0 · 带 callIdentity
+  R->>W: 第 1 次物理请求
+  W->>S: 请求 · 首包计时器 300 秒开始
+  S-->>W: 响应头到了 · start 事件
+  S-->>W: 流里报 529，屏幕上还没有字
+  W-->>R: 事件原样上交 · 先进 buffered 缓冲
+  rect rgb(255, 237, 224)
+  Note over R: failureResult 判断 · 没取消 · 没有可见输出 · 529 在白名单
+  R-->>U: waiting · 约 0.75 秒后重试
+  end
+--- 第 2 次物理请求：每次重试都重新穿过看门狗，所以有自己的计时器。又是 529，仍在缓冲里，再发一个 `waiting`，这次等得更久（指数退避，实验里取中间值 1.5 秒）。
+sequenceDiagram
+  participant A as Pi Agent
+  participant R as withLLMRetry
+  participant W as withLLMStreamTimeouts
+  participant S as 服务商
+  participant U as 界面
+  A->>R: 要一次模型回复
+  Note over R: 每次尝试 maxRetries 为 0 · 带 callIdentity
+  R->>W: 第 1 次物理请求
+  W->>S: 请求 · 首包计时器 300 秒开始
+  S-->>W: 响应头到了 · start 事件
+  S-->>W: 流里报 529，屏幕上还没有字
+  W-->>R: 事件原样上交 · 先进 buffered 缓冲
+  Note over R: failureResult 判断 · 没取消 · 没有可见输出 · 529 在白名单
+  R-->>U: waiting · 约 0.75 秒后重试
+  rect rgb(255, 237, 224)
+  R->>W: 第 2 次物理请求 · 新的计时器
+  S-->>W: 又是 529
+  W-->>R: 事件进缓冲，没有可见输出
+  R-->>U: waiting · 约 1.5 秒后重试
+  end
+--- 第 3 次请求，文字增量到了。遇到 `commitsOutput` 为真的事件才**提交**：缓冲的事件连同后面的流通过 `replayStream` 交出去，同时发 `recovered`。提交之后再失败，就留在这次请求上，不再重试。
+sequenceDiagram
+  participant A as Pi Agent
+  participant R as withLLMRetry
+  participant W as withLLMStreamTimeouts
+  participant S as 服务商
+  participant U as 界面
+  A->>R: 要一次模型回复
+  Note over R: 每次尝试 maxRetries 为 0 · 带 callIdentity
+  R->>W: 第 1 次物理请求
+  W->>S: 请求 · 首包计时器 300 秒开始
+  S-->>W: 响应头到了 · start 事件
+  S-->>W: 流里报 529，屏幕上还没有字
+  W-->>R: 事件原样上交 · 先进 buffered 缓冲
+  Note over R: failureResult 判断 · 没取消 · 没有可见输出 · 529 在白名单
+  R-->>U: waiting · 约 0.75 秒后重试
+  R->>W: 第 2 次物理请求 · 新的计时器
+  S-->>W: 又是 529
+  W-->>R: 事件进缓冲，没有可见输出
+  R-->>U: waiting · 约 1.5 秒后重试
+  rect rgb(255, 237, 224)
+  R->>W: 第 3 次物理请求
+  S-->>W: start 之后来了文字增量
+  W-->>R: 非空文字增量 · commitsOutput 为真
+  Note over R: 提交 · 缓冲的事件连同后面的流一起交出
+  R-->>U: recovered
+  R-->>A: replayStream 交出整条回复
+  end
+:::
+
 ## 卡住的流：两个看门狗
 
 连接没断、也没报错，服务商只是不说话了——这种情况没有异常可抓。`withLLMStreamTimeouts` 给每次物理请求配两个计时器：
@@ -238,6 +337,219 @@ flowchart TD
   L -->|否| D[退避，发下一次请求]
 ```
 
+::: steps BYOK 配错 key：一个 401 怎样走完判断路径
+--- 用户在 `custom_provider:my-gateway` 里配错了 key。第一次请求在响应头阶段就收到 **401**，一次物理请求失败，进入判断。
+flowchart TD
+  E["一次物理请求失败"]:::on
+  C{"用户取消？"}:::dim
+  N1["不重试 · abort"]:::dim
+  V{"已经有可见输出？"}:::dim
+  N2["不重试 · 失败留在这次请求"]:::dim
+  B{"BYOK？<br/>minimax_api 或 custom_provider:"}:::dim
+  BR{"拒答，或重发也一样被拒？<br/>refusal · 413 · 上下文溢出 · 图片超限 · 400 invalid_request_error"}:::dim
+  N3["不重试"]:::dim
+  R["重试"]:::dim
+  W{"白名单？<br/>timeout · network · 429 · TPM · 529"}:::dim
+  N4["不重试<br/>含普通 5xx 和认不出的错误"]:::dim
+  L{"用满 5 次，或再等就超过 120 秒？"}:::dim
+  N5["exhausted · 抛出最后一个错误"]:::dim
+  D["退避，发下一次请求"]:::dim
+  E --> C
+  C -->|是| N1
+  C -->|否| V
+  V -->|是| N2
+  V -->|否| B
+  B -->|是| BR
+  BR -->|是| N3
+  BR -->|否| R
+  B -->|否| W
+  W -->|是| R
+  W -->|否| N4
+  R --> L
+  L -->|是| N5
+  L -->|否| D
+--- 第一问：用户取消了吗？没有，继续。
+flowchart TD
+  E["一次物理请求失败"]:::done
+  C{"用户取消？"}:::on
+  N1["不重试 · abort"]:::dim
+  V{"已经有可见输出？"}:::dim
+  N2["不重试 · 失败留在这次请求"]:::dim
+  B{"BYOK？<br/>minimax_api 或 custom_provider:"}:::dim
+  BR{"拒答，或重发也一样被拒？<br/>refusal · 413 · 上下文溢出 · 图片超限 · 400 invalid_request_error"}:::dim
+  N3["不重试"]:::dim
+  R["重试"]:::dim
+  W{"白名单？<br/>timeout · network · 429 · TPM · 529"}:::dim
+  N4["不重试<br/>含普通 5xx 和认不出的错误"]:::dim
+  L{"用满 5 次，或再等就超过 120 秒？"}:::dim
+  N5["exhausted · 抛出最后一个错误"]:::dim
+  D["退避，发下一次请求"]:::dim
+  E --> C
+  C -->|是| N1
+  C -->|否| V
+  V -->|是| N2
+  V -->|否| B
+  B -->|是| BR
+  BR -->|是| N3
+  BR -->|否| R
+  B -->|否| W
+  W -->|是| R
+  W -->|否| N4
+  R --> L
+  L -->|是| N5
+  L -->|否| D
+--- 第二问：已经有可见输出了吗？没有：401 在响应头阶段就回来了，调用方什么都没看见，所以还有重试的资格。
+flowchart TD
+  E["一次物理请求失败"]:::done
+  C{"用户取消？"}:::done
+  N1["不重试 · abort"]:::dim
+  V{"已经有可见输出？"}:::on
+  N2["不重试 · 失败留在这次请求"]:::dim
+  B{"BYOK？<br/>minimax_api 或 custom_provider:"}:::dim
+  BR{"拒答，或重发也一样被拒？<br/>refusal · 413 · 上下文溢出 · 图片超限 · 400 invalid_request_error"}:::dim
+  N3["不重试"]:::dim
+  R["重试"]:::dim
+  W{"白名单？<br/>timeout · network · 429 · TPM · 529"}:::dim
+  N4["不重试<br/>含普通 5xx 和认不出的错误"]:::dim
+  L{"用满 5 次，或再等就超过 120 秒？"}:::dim
+  N5["exhausted · 抛出最后一个错误"]:::dim
+  D["退避，发下一次请求"]:::dim
+  E --> C
+  C -->|是| N1
+  C -->|否| V
+  V -->|是| N2
+  V -->|否| B
+  B -->|是| BR
+  BR -->|是| N3
+  BR -->|否| R
+  B -->|否| W
+  W -->|是| R
+  W -->|否| N4
+  R --> L
+  L -->|是| N5
+  L -->|否| D
+--- 第三问：是 BYOK 吗？是。BYOK 的规则和官方账号相反，几乎都重试，只排除拒答和“重发也一样被拒”的几类。
+flowchart TD
+  E["一次物理请求失败"]:::done
+  C{"用户取消？"}:::done
+  N1["不重试 · abort"]:::dim
+  V{"已经有可见输出？"}:::done
+  N2["不重试 · 失败留在这次请求"]:::dim
+  B{"BYOK？<br/>minimax_api 或 custom_provider:"}:::on
+  BR{"拒答，或重发也一样被拒？<br/>refusal · 413 · 上下文溢出 · 图片超限 · 400 invalid_request_error"}:::dim
+  N3["不重试"]:::dim
+  R["重试"]:::dim
+  W{"白名单？<br/>timeout · network · 429 · TPM · 529"}:::dim
+  N4["不重试<br/>含普通 5xx 和认不出的错误"]:::dim
+  L{"用满 5 次，或再等就超过 120 秒？"}:::dim
+  N5["exhausted · 抛出最后一个错误"]:::dim
+  D["退避，发下一次请求"]:::dim
+  E --> C
+  C -->|是| N1
+  C -->|否| V
+  V -->|是| N2
+  V -->|否| B
+  B -->|是| BR
+  BR -->|是| N3
+  BR -->|否| R
+  B -->|否| W
+  W -->|是| R
+  W -->|否| N4
+  R --> L
+  L -->|是| N5
+  L -->|否| D
+--- 401 不在那几类里（拒答、413、上下文溢出、图片超限、400 加 `invalid_request_error`），所以结论是**重试**。注释给的理由：自定义网关的口径五花八门，一个 401 可能只是网关抖了一下。
+flowchart TD
+  E["一次物理请求失败"]:::done
+  C{"用户取消？"}:::done
+  N1["不重试 · abort"]:::dim
+  V{"已经有可见输出？"}:::done
+  N2["不重试 · 失败留在这次请求"]:::dim
+  B{"BYOK？<br/>minimax_api 或 custom_provider:"}:::done
+  BR{"拒答，或重发也一样被拒？<br/>refusal · 413 · 上下文溢出 · 图片超限 · 400 invalid_request_error"}:::on
+  N3["不重试"]:::dim
+  R["重试"]:::on
+  W{"白名单？<br/>timeout · network · 429 · TPM · 529"}:::dim
+  N4["不重试<br/>含普通 5xx 和认不出的错误"]:::dim
+  L{"用满 5 次，或再等就超过 120 秒？"}:::dim
+  N5["exhausted · 抛出最后一个错误"]:::dim
+  D["退避，发下一次请求"]:::dim
+  E --> C
+  C -->|是| N1
+  C -->|否| V
+  V -->|是| N2
+  V -->|否| B
+  B -->|是| BR
+  BR -->|是| N3
+  BR -->|否| R
+  B -->|否| W
+  W -->|是| R
+  W -->|否| N4
+  R --> L
+  L -->|是| N5
+  L -->|否| D
+--- 还没用满 5 次，再等也不会超过 120 秒：退避，发下一次。同一个 401 会一路走到这里五次。
+flowchart TD
+  E["一次物理请求失败"]:::done
+  C{"用户取消？"}:::done
+  N1["不重试 · abort"]:::dim
+  V{"已经有可见输出？"}:::done
+  N2["不重试 · 失败留在这次请求"]:::dim
+  B{"BYOK？<br/>minimax_api 或 custom_provider:"}:::done
+  BR{"拒答，或重发也一样被拒？<br/>refusal · 413 · 上下文溢出 · 图片超限 · 400 invalid_request_error"}:::done
+  N3["不重试"]:::dim
+  R["重试"]:::done
+  W{"白名单？<br/>timeout · network · 429 · TPM · 529"}:::dim
+  N4["不重试<br/>含普通 5xx 和认不出的错误"]:::dim
+  L{"用满 5 次，或再等就超过 120 秒？"}:::on
+  N5["exhausted · 抛出最后一个错误"]:::dim
+  D["退避，发下一次请求"]:::on
+  E --> C
+  C -->|是| N1
+  C -->|否| V
+  V -->|是| N2
+  V -->|否| B
+  B -->|是| BR
+  BR -->|是| N3
+  BR -->|否| R
+  B -->|否| W
+  W -->|是| R
+  W -->|否| N4
+  R --> L
+  L -->|是| N5
+  L -->|否| D
+--- 第 5 次重试仍然是 401，`L` 为“是”：发 `exhausted`，抛出最后一个错误。一共 6 次物理请求、约 23 秒，用户才看到 401。上游有一条测试专门钉住这个次数。
+flowchart TD
+  E["一次物理请求失败"]:::done
+  C{"用户取消？"}:::done
+  N1["不重试 · abort"]:::dim
+  V{"已经有可见输出？"}:::done
+  N2["不重试 · 失败留在这次请求"]:::dim
+  B{"BYOK？<br/>minimax_api 或 custom_provider:"}:::done
+  BR{"拒答，或重发也一样被拒？<br/>refusal · 413 · 上下文溢出 · 图片超限 · 400 invalid_request_error"}:::done
+  N3["不重试"]:::dim
+  R["重试"]:::done
+  W{"白名单？<br/>timeout · network · 429 · TPM · 529"}:::dim
+  N4["不重试<br/>含普通 5xx 和认不出的错误"]:::dim
+  L{"用满 5 次，或再等就超过 120 秒？"}:::on
+  N5["exhausted · 抛出最后一个错误"]:::on
+  D["退避，发下一次请求"]:::done
+  E --> C
+  C -->|是| N1
+  C -->|否| V
+  V -->|是| N2
+  V -->|否| B
+  B -->|是| BR
+  BR -->|是| N3
+  BR -->|否| R
+  B -->|否| W
+  W -->|是| R
+  W -->|否| N4
+  R --> L
+  L -->|是| N5
+  L -->|否| D
+:::
+
 官方账号走的是白名单：
 
 @mm packages/shared/src/llm-error-classifier.ts#L389-L434 hl=393-405,414-415,417-433
@@ -270,9 +582,16 @@ BYOK 的规则相反：
 
 `sawStopReason` 在任何一个 `message_delta` 带着非空字符串的 `stop_reason` 时置位（L483-485；早先的 delta 可以是 null，所以要看整条流）。流读完，见过 `message_start` 和 `message_stop` 却没见过 `stop_reason`，就抛 `Anthropic stream ended without stop_reason (…)`；`streamAnthropic` 已有的 `catch` 把它变成 `stopReason: "error"` 加 `errorMessage`，已经收到的内容保留。诊断里只放计数和耗时，不放正文。
 
-同一个洞，Learn Pi Agent 第 2 章讲的 v1.5.0 用另一种方式补上了：
+同一个洞，Learn Pi Agent 第 2 章讲的 v1.5.0 用另一种方式补上了。两种补法对照着看：
 
+::: tabs
+@@ MiniMax 补丁（v0.79.1）
+@mm third_party/pi-mono/packages/ai/src/providers/anthropic.ts#L516-L529 hl=520-528
+流读完，见过 `message_start` 和 `message_stop` 却没见过 `stop_reason`，就抛。
+@@ Pi v1.5.0
 @pi packages/ai/src/api/anthropic-messages.ts#L894-L898 hl=896-898
+初始值改成 `"pending"`，流结束时仍是 `pending` 就抛。
+:::
 
 v1.5.0 把初始值改成 `"pending"`（同一文件 L601），流结束时仍是 `pending` 就抛。这是台账里“可回馈上游”那一类条目的典型结局：上游自己用另一种方式修了，第 11 章会教你怎样去核对。
 
@@ -352,9 +671,16 @@ v1.5.0 把初始值改成 `"pending"`（同一文件 L601），流结束时仍�
 
 @code host/src/models.mjs#classifyError hl=377-379
 
-重试，对应 `withLLMRetry`：
+重试，对应 `withLLMRetry`。提交边界是它最关键的规矩，两份写法对照着看：
 
+::: tabs
+@@ MiniMax
+@mm packages/agent-core/src/pi-turn-runner/llm-retry.ts#L460-L475 hl=460-464,465
+每个事件先进 `buffered`，遇到 `commitsOutput` 才提交；提交之前的失败可以重试，之后的原样抛出。
+@@ host
 @code host/src/models.mjs#withRetry hl=416,420,422,427,433-440,449-454
+每次物理请求建一个提交缓冲，模型通过 `call.emit` 流出事件；取消，或者已经有可见输出，立刻抛出，再加次数和 120 秒上限。
+:::
 
 每次物理请求建一个提交缓冲（L420），模型通过 `call.emit` 流出事件；L427 是两条规矩之一：取消，或者已经有可见输出，立刻抛出；L433-440 是次数和 120 秒上限。
 

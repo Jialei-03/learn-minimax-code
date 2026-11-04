@@ -153,6 +153,69 @@ policy 级的 deny 不是拒绝，而是**在引擎已经放行时把 allow 降�
 
 模式是 `bypassPermissions` 且结果是 `ask`，就改成 `allow`；`deny` 不动；改写过的输入（`rm` → 回收站）保留。文件头的注释说明了这个闸门为什么存在：产生 ask 的地方有二十多处，以前每一处都要自己判断“这个 ask 在 bypass 下算不算免疫”，漏掉一处就是一个 bug；现在**一次性规定**“完全访问 = 界面永远不弹卡片”，新增的 ask 来源自动继承。
 
+::: steps 一条“写工具 + 用户 ask 规则 + 完全访问”的调用怎样走完五站
+--- 模型调用 `edit src/app.ts`。用户在规则里写过一条整工具的 ask 规则，权限模式是“完全访问”。facade 的 `checkPermissionRaw` 要依次过五站，第一张表里“ask 规则也被抹掉”的那一行，就是这条路。
+flowchart LR
+  C["edit src/app.ts<br/>ask 规则 + 完全访问"]:::on
+  H["① 本地硬检查"]:::dim
+  E["② 规则台阶"]:::dim
+  P["③ policy 降级"]:::dim
+  M["④ 模式映射"]:::dim
+  G["⑤ ask 闸门"]:::dim
+  R["结果：?"]:::dim
+  C --> H --> E --> P --> M --> G --> R
+--- **① 本地硬检查** `evaluateLocalPermissionCheck`：路径在工作区内，不是网络共享，也不是递归删根，没有 `bypass-immune` 的 deny，`facade.ts` L728-L733 的提前返回不触发。
+flowchart LR
+  C["edit src/app.ts<br/>ask 规则 + 完全访问"]:::done
+  H["① 本地硬检查"]:::on
+  E["② 规则台阶"]:::dim
+  P["③ policy 降级"]:::dim
+  M["④ 模式映射"]:::dim
+  G["⑤ ask 闸门"]:::dim
+  R["结果：?"]:::dim
+  C --> H --> E --> P --> M --> G --> R
+--- **② 规则台阶** `reducePermissionDecision`：整工具 deny 规则（L168）没有，检查器也没说 deny（L175），**整工具 ask 规则（L180）命中，结果 ask**。“完全访问”的 bypass 台阶在 L258，排在 ask 规则后面，轮不到。
+flowchart LR
+  C["edit src/app.ts<br/>ask 规则 + 完全访问"]:::done
+  H["① 本地硬检查"]:::done
+  E["② 规则台阶：ask"]:::on
+  P["③ policy 降级"]:::dim
+  M["④ 模式映射"]:::dim
+  G["⑤ ask 闸门"]:::dim
+  R["结果：?"]:::dim
+  C --> H --> E --> P --> M --> G --> R
+--- **③ policy 降级**（`facade.ts` L802-L814）只处理“凭据路径，并且引擎已经放行”的情形。这次没有凭据路径，引擎给的也不是 allow，条件不成立，直接略过。
+flowchart LR
+  C["edit src/app.ts<br/>ask 规则 + 完全访问"]:::done
+  H["① 本地硬检查"]:::done
+  E["② 规则台阶：ask"]:::done
+  P["③ policy 降级：略过"]:::on
+  M["④ 模式映射"]:::dim
+  G["⑤ ask 闸门"]:::dim
+  R["结果：?"]:::dim
+  C --> H --> E --> P --> M --> G --> R
+--- **④ 模式映射**：`modeToAskPolicy` 把“完全访问”映射成 `never`，facade 对 `never` 不再向用户询问，把引擎的 ask 原样返回（`askPolicy === 'never'` 分支）。此刻结果还是 ask。
+flowchart LR
+  C["edit src/app.ts<br/>ask 规则 + 完全访问"]:::done
+  H["① 本地硬检查"]:::done
+  E["② 规则台阶：ask"]:::done
+  P["③ policy 降级：略过"]:::done
+  M["④ 模式映射：never"]:::on
+  G["⑤ ask 闸门"]:::dim
+  R["结果：ask"]:::dim
+  C --> H --> E --> P --> M --> G --> R
+--- **⑤ ask 闸门** `applyAskGate`（`ask-gate.ts` L66-L81）站在公开入口：模式是 `bypassPermissions` 且结果是 ask，就改成 allow。用户亲手写的 ask 规则就这样被抹掉；如果它是 deny 规则，第②步已经返回 deny，闸门不会动它。
+flowchart LR
+  C["edit src/app.ts<br/>ask 规则 + 完全访问"]:::done
+  H["① 本地硬检查"]:::done
+  E["② 规则台阶：ask"]:::done
+  P["③ policy 降级：略过"]:::done
+  M["④ 模式映射：never"]:::done
+  G["⑤ ask 闸门：ask → allow"]:::on
+  R["结果：allow"]:::on
+  C --> H --> E --> P --> M --> G --> R
+:::
+
 代价是第一张表里看到的：Claude Code 里，bypass 压不过 deny、整工具 ask、内容 ask 和受保护路径（第 6 章）；MiniMax 里 bypass 之后**除了 deny 什么都不剩**，连用户亲手写的 ask 规则和凭据路径的询问都被抹掉。两种取舍的理由不同：Claude Code 把 bypass 当成“少问一点”，MiniMax 把它当成用户对“每次都问”的明确放弃，并用 bypass-immune 那一小撮不可恢复的操作兜底。
 
 用 16 个“规则 × 模式 × 本地检查”的组合，把真实的 `reducePermissionDecision`（加 facade 的胶水）和 host 的 `decide` 逐行对账：
@@ -192,6 +255,117 @@ policy 级的 deny 不是拒绝，而是**在引擎已经放行时把 allow 降�
 @mm packages/local-runtime/src/api/local-permission-approval-service.ts#L143-L170 hl=149-150,163-165
 
 `allowAlways` 写**全局**规则，`allowOnce` 写**会话**规则，`deny` 也写一条**会话级 deny 规则**（L165）：用户拒绝过的调用，模型换个说法再来一次，不会再弹同一张卡片。写规则失败，请求按拒绝结算（同一个函数后面的 `catch`）。审批服务还负责同一个调用的去重（相同指纹的挂起请求共用一张卡片）和 Turn 取消时把挂起的请求统一结算成 deny。
+
+::: steps ask 交给用户：每个不确定的分支都倒向拒绝
+--- 引擎说 ask 之后，权限门（`resolvePermissionPrompt`，L402）先问插件的 `PermissionRequest` 钩子，没人答复就交给审批所有者 `approval.request`。
+flowchart TD
+  ASK["引擎说 ask"]:::on
+  CAP{"宿主有<br/>permissionPrompt 能力？"}:::dim
+  REJ["reject<br/>HOST_CAPABILITY_UNAVAILABLE"]:::dim
+  ACP["ACP handlePermission<br/>decision 先设为 deny"]:::dim
+  USER["用户在编辑器里选择"]:::dim
+  ALLOW["allowOnce / allowAlways"]:::dim
+  DENY["deny"]:::dim
+  RULE["reply 落成规则"]:::dim
+  ASK --> CAP
+  CAP -- 没有 --> REJ
+  CAP -- 有 --> ACP --> USER
+  USER -- "allow-once / allow-always" --> ALLOW
+  USER -- 其他选项 --> DENY
+  ACP -- "连接出错 / 会话已失效" --> DENY
+  ALLOW --> RULE
+  DENY --> RULE
+--- 先看有没有人可问。能力由界面类型决定：`permissionPrompt: options.surface !== 'headless'`（`lifecycle.ts` L468）。`mcode exec` 是 headless，`hosted-agent-permission-capabilities.ts` L105-L110 直接 reject，钩子抛出，Pi 的 `prepareToolCall` 把抛出变成错误结果，**工具不执行**。
+flowchart TD
+  ASK["引擎说 ask"]:::done
+  CAP{"宿主有<br/>permissionPrompt 能力？"}:::on
+  REJ["reject<br/>HOST_CAPABILITY_UNAVAILABLE"]:::on
+  ACP["ACP handlePermission<br/>decision 先设为 deny"]:::dim
+  USER["用户在编辑器里选择"]:::dim
+  ALLOW["allowOnce / allowAlways"]:::dim
+  DENY["deny"]:::dim
+  RULE["reply 落成规则"]:::dim
+  ASK --> CAP
+  CAP -- 没有 --> REJ
+  CAP -- 有 --> ACP --> USER
+  USER -- "allow-once / allow-always" --> ALLOW
+  USER -- 其他选项 --> DENY
+  ACP -- "连接出错 / 会话已失效" --> DENY
+  ALLOW --> RULE
+  DENY --> RULE
+--- 有界面（这里以 ACP 为例）：`handlePermission` 一进来就把 `decision` 设成 `deny`（`interactions.ts` L560），再向编辑器发 `requestPermission`。默认值就是拒绝。
+flowchart TD
+  ASK["引擎说 ask"]:::done
+  CAP{"宿主有<br/>permissionPrompt 能力？"}:::done
+  REJ["reject<br/>HOST_CAPABILITY_UNAVAILABLE"]:::dim
+  ACP["ACP handlePermission<br/>decision 先设为 deny"]:::on
+  USER["用户在编辑器里选择"]:::dim
+  ALLOW["allowOnce / allowAlways"]:::dim
+  DENY["deny"]:::dim
+  RULE["reply 落成规则"]:::dim
+  ASK --> CAP
+  CAP -- 没有 --> REJ
+  CAP -- 有 --> ACP --> USER
+  USER -- "allow-once / allow-always" --> ALLOW
+  USER -- 其他选项 --> DENY
+  ACP -- "连接出错 / 会话已失效" --> DENY
+  ALLOW --> RULE
+  DENY --> RULE
+--- 用户明确选了 `allow-once` 或 `allow-always`（后者还要 `allowAlwaysSupported`），`decision` 才改成 `allowOnce` / `allowAlways`（L573-L583）。选别的选项，仍是 `deny`。
+flowchart TD
+  ASK["引擎说 ask"]:::done
+  CAP{"宿主有<br/>permissionPrompt 能力？"}:::done
+  REJ["reject<br/>HOST_CAPABILITY_UNAVAILABLE"]:::dim
+  ACP["ACP handlePermission<br/>decision 先设为 deny"]:::done
+  USER["用户在编辑器里选择"]:::on
+  ALLOW["allowOnce / allowAlways"]:::on
+  DENY["deny"]:::dim
+  RULE["reply 落成规则"]:::dim
+  ASK --> CAP
+  CAP -- 没有 --> REJ
+  CAP -- 有 --> ACP --> USER
+  USER -- "allow-once / allow-always" --> ALLOW
+  USER -- 其他选项 --> DENY
+  ACP -- "连接出错 / 会话已失效" --> DENY
+  ALLOW --> RULE
+  DENY --> RULE
+--- 另一边：请求出错（连接断了）落到 `catch`，仍是 `deny`（L581）；会话已经不是当前会话（`isCurrent()` 为假），也改成 `deny`（L585）。**每个不确定的分支都倒向拒绝。**
+flowchart TD
+  ASK["引擎说 ask"]:::done
+  CAP{"宿主有<br/>permissionPrompt 能力？"}:::done
+  REJ["reject<br/>HOST_CAPABILITY_UNAVAILABLE"]:::dim
+  ACP["ACP handlePermission<br/>decision 先设为 deny"]:::done
+  USER["用户在编辑器里选择"]:::done
+  ALLOW["allowOnce / allowAlways"]:::done
+  DENY["deny"]:::on
+  RULE["reply 落成规则"]:::dim
+  ASK --> CAP
+  CAP -- 没有 --> REJ
+  CAP -- 有 --> ACP --> USER
+  USER -- "allow-once / allow-always" --> ALLOW
+  USER -- 其他选项 --> DENY
+  ACP -- "连接出错 / 会话已失效" --> DENY
+  ALLOW --> RULE
+  DENY --> RULE
+--- `replyPermission` 把决定交回审批服务，服务把用户的回复落成规则（`local-permission-approval-service.ts` L143-L170）：`allowAlways` 写全局 allow，`allowOnce` 写会话 allow，`deny` 写会话级 deny。
+flowchart TD
+  ASK["引擎说 ask"]:::done
+  CAP{"宿主有<br/>permissionPrompt 能力？"}:::done
+  REJ["reject<br/>HOST_CAPABILITY_UNAVAILABLE"]:::dim
+  ACP["ACP handlePermission<br/>decision 先设为 deny"]:::done
+  USER["用户在编辑器里选择"]:::done
+  ALLOW["allowOnce / allowAlways"]:::done
+  DENY["deny"]:::done
+  RULE["reply 落成规则"]:::on
+  ASK --> CAP
+  CAP -- 没有 --> REJ
+  CAP -- 有 --> ACP --> USER
+  USER -- "allow-once / allow-always" --> ALLOW
+  USER -- 其他选项 --> DENY
+  ACP -- "连接出错 / 会话已失效" --> DENY
+  ALLOW --> RULE
+  DENY --> RULE
+:::
 
 用 host 的 `askUser` 把这些情形走一遍，再看真实的 `serializePermissionRequest` 和回复别名：
 
@@ -316,11 +490,25 @@ Pi 的 bash 工具留了 `operations` 这个口子（Learn Pi Agent 第 15 章�
 | 沙箱运行时 | 无 | 开源 sandbox-runtime | 同一个项目的 fork，加了独立删除范围 |
 | 物理路径 | 权限扩展匹配前解析符号链接 | — | 权限层是字符串，物理层在沙箱 |
 
+同一个拦截点在三份代码里的样子，切换标签对照：
+
+::: tabs
+@@ Pi
+@pi packages/agent/src/agent-loop.ts#L736-L760
+只有一个 `beforeToolCall` 口子：返回 `block` 就变成一条错误结果，工具不执行。
+@@ MiniMax
+@mm packages/agent-core/src/pi-turn-runner/tools.ts#L88-L105
+把一组钩子串成链，第一个返回 `block` 的赢；权限门是链上的最后一站。
+@@ host
+@code host/src/tools.mjs#L220-L244
+先跑 Hook，最后调用 `authorize`；权限门自己抛错也拦下，和 MiniMax “钩子出错，调用不执行”一致。
+:::
+
 ## 动手：host 里的实现
 
 `host/src/permissions.mjs` 把以上压成四块，文件头注释写了每块对应的 MiniMax 函数。先是本地硬检查，对应 `evaluateLocalPermissionCheck`：
 
-@code host/src/permissions.mjs#localCheck hl=29,34,38
+@code host/src/permissions.mjs#localCheck hl=71,76,79
 
 三种结果和 MiniMax 一一对应：网络共享与物理越界是 `bypass-immune`，凭据路径是 `policy`。简化之处：host 没有 bash 工具，只看路径参数；越界路径在 MiniMax 里只是 ask，这里是硬边界，因为 host 的 read、edit 没有沙箱保护。
 
@@ -334,9 +522,16 @@ Pi 的 bash 工具留了 `operations` 这个口子（Learn Pi Agent 第 15 章�
 
 @code host/src/permissions.mjs#askUser
 
-沙箱准入，对应 `beginInvocation` 的头几行：
+沙箱准入，对应 `beginInvocation` 的头几行。左边是 MiniMax 的准入函数，右边是 host 的压缩版：
 
+::: tabs
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/sandbox/local-sandbox-service.ts#L352-L388 hl=363-364,380-382
+没开：原生执行；开了但生命周期不是 `ready` 或没有后端：抛 `SANDBOX_UNAVAILABLE`。
+@@ host
 @code host/src/permissions.mjs#admitSandbox
+没开：原生执行；开了却没有后端：抛 `SANDBOX_UNSUPPORTED_PLATFORM`，绝不悄悄退回无隔离执行。
+:::
 
 运行 `node labs/chapters/07-permissions.mjs`，会依次运行本章所有小实验，再检查 host 导出的 API（`absoluteClientPath`、`localCheck`、`authorize`）与第 4 章流水线的衔接：读 `.env` 被权限门拦下、写过 allow 规则就放行、`acceptEdits` 自动接受工作区内的修改、要求沙箱的 `test` 工具在没有后端时拒绝执行。各个小实验的命令也可以单独运行：`labs/ch07/` 下的 `modes`、`ladder`、`ask`、`sandbox`、`paths`。
 

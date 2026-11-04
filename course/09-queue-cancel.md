@@ -115,7 +115,63 @@ MiniMax 对 Pi 的这两个队列只用了一个。`enqueueSteering` 调 Pi 的 
 
 消息躺在队列里，调度器把它取走变成一个 Turn。这一步涉及三方：队列、Turn 的准入、Turn 的开始。MiniMax 用三个动作把它们串起来，崩溃可能发生在任意两个动作之间：
 
-```mermaid
+::: steps 一条排队的消息：claim、接纳、确认，三步之间可以崩溃
+--- **claim**：`claimNext` 在一个 `immediate` 事务里把 `queued` 改成 `claimed`，写下 `claimId`、owner 和 30 秒租约。同一会话已有 claim 就不给（`drizzle.ts` L304-L318）。
+sequenceDiagram
+  participant D as 派发器<br/>queue.dispatcher
+  participant Q as 队列仓库<br/>queue_items
+  participant T as Turn 准入<br/>session_locks / turn_ingress
+  participant F as 开始栅栏<br/>start fence
+  participant R as Turn 执行
+  D->>Q: claimNext：queued → claimed，写 claimId、owner、租约
+--- 派发器带着 `claimId` 去请求准入之前，先 `prepareDelivery`（对应 `beforeSubmit`），在行上记下 `(claimId, turnId)` 这次投递尝试。崩溃在这里，claim 还在、没有回执，重启后放回队列。
+sequenceDiagram
+  participant D as 派发器<br/>queue.dispatcher
+  participant Q as 队列仓库<br/>queue_items
+  participant T as Turn 准入<br/>session_locks / turn_ingress
+  participant F as 开始栅栏<br/>start fence
+  participant R as Turn 执行
+  D->>Q: claimNext：queued → claimed，写 claimId、owner、租约
+  D->>Q: prepareDelivery：记下 (claimId, turnId) 这次投递尝试
+  Note over D,Q: 崩溃在这里：claim 还在，没有回执，放回队列
+--- **准入**：一个事务里查重、查会话锁（`session_locks` 主键是 `session_id`）、过优先级围栏，通过后写会话锁和 `turn_ingress` 一行，行里有 `claimId`。**这一行是回执，属于 Turn。** Turn 被开始栅栏拦住，还没动手。
+sequenceDiagram
+  participant D as 派发器<br/>queue.dispatcher
+  participant Q as 队列仓库<br/>queue_items
+  participant T as Turn 准入<br/>session_locks / turn_ingress
+  participant F as 开始栅栏<br/>start fence
+  participant R as Turn 执行
+  D->>Q: claimNext：queued → claimed，写 claimId、owner、租约
+  D->>Q: prepareDelivery：记下 (claimId, turnId) 这次投递尝试
+  D->>T: 准入事务：写会话锁，写回执（claimId、队列项 id）
+  T-->>D: accepted。Turn 已登记，被栅栏拦着，还没开始
+  Note over D,T: 崩溃在这里：回执有了，但队列还没确认，仍然放回队列
+--- `completeAcceptedDelivery` 先把用户消息提交进历史，再进入 `beforeStart`：Turn 的第一个副作用之前，该记的账先记。
+sequenceDiagram
+  participant D as 派发器<br/>queue.dispatcher
+  participant Q as 队列仓库<br/>queue_items
+  participant T as Turn 准入<br/>session_locks / turn_ingress
+  participant F as 开始栅栏<br/>start fence
+  participant R as Turn 执行
+  D->>Q: claimNext：queued → claimed，写 claimId、owner、租约
+  D->>Q: prepareDelivery：记下 (claimId, turnId) 这次投递尝试
+  D->>T: 准入事务：写会话锁，写回执（claimId、队列项 id）
+  T-->>D: accepted。Turn 已登记，被栅栏拦着，还没开始
+  D->>D: 提交用户消息到历史
+--- **确认**：派发器在 `beforeStart` 里调 `acknowledgeClaim`，它去问 Turn 一侧的 `acceptanceLookup`，回执对得上才给回执打确认、删除队列行；没有回执抛 `QueueClaimNotAcceptedError`。
+sequenceDiagram
+  participant D as 派发器<br/>queue.dispatcher
+  participant Q as 队列仓库<br/>queue_items
+  participant T as Turn 准入<br/>session_locks / turn_ingress
+  participant F as 开始栅栏<br/>start fence
+  participant R as Turn 执行
+  D->>Q: claimNext：queued → claimed，写 claimId、owner、租约
+  D->>Q: prepareDelivery：记下 (claimId, turnId) 这次投递尝试
+  D->>T: 准入事务：写会话锁，写回执（claimId、队列项 id）
+  T-->>D: accepted。Turn 已登记，被栅栏拦着，还没开始
+  D->>D: 提交用户消息到历史
+  D->>Q: acknowledgeClaim：回执在才确认，删除队列行
+--- 确认完成，`start.release()` 放行栅栏，Turn 才开始调用模型。崩溃在放行之前：claim 还在，收回重来；确认之后：队列行已删，善后归 Turn 的会话锁租约。
 sequenceDiagram
   participant D as 派发器<br/>queue.dispatcher
   participant Q as 队列仓库<br/>queue_items
@@ -132,7 +188,7 @@ sequenceDiagram
   F->>R: Turn 开始执行
   Note over D,Q: 崩溃在栅栏放行之前：claim 还在，收回并放回队列
   Note over Q,R: 确认之后：队列不再负责，崩溃的善后归 Turn
-```
+:::
 
 ### 第一步：claim
 
@@ -282,7 +338,88 @@ runner 在 Pi 的每个 `turn_end` 之后问宿主要插话，并且告诉它“
 
 用户按了停止。这一刻到下一条消息能开始之间，有一串事情必须按顺序发生。先看总图：
 
-```mermaid
+::: steps 按下停止之后：先收尾，再放行下一条
+--- 用户按下停止。`abort` 到了 `TurnController`，`abortEntry` **同步**做三件事：`phase` 置为 `aborted`，未消费的插话交给 `onSteeringDiscarded('abort')`，随后才发信号（`turn.controller.ts` L145-L184）。
+sequenceDiagram
+  participant U as 用户 / 适配器
+  participant X as TurnExecutionService.abort
+  participant C as TurnController
+  participant R as 运行中的 Turn<br/>Pi Agent 与工具
+  participant K as ExecutionCoordinator<br/>settleAndRelease
+  participant DB as 数据库
+  participant Q as 队列派发器
+  U->>X: abort，reason=user_stop
+  X->>C: controller.abort
+  C->>C: abortEntry：phase=aborted<br/>未消费的插话交给 onSteeringDiscarded('abort')
+--- 信号发给运行中的 Turn：结束工具进程、排空事件、对齐历史，写出终态 `aborted`（第 2 章）。Host 把这个结局交给协调者 `ExecutionCoordinator`。
+sequenceDiagram
+  participant U as 用户 / 适配器
+  participant X as TurnExecutionService.abort
+  participant C as TurnController
+  participant R as 运行中的 Turn<br/>Pi Agent 与工具
+  participant K as ExecutionCoordinator<br/>settleAndRelease
+  participant DB as 数据库
+  participant Q as 队列派发器
+  U->>X: abort，reason=user_stop
+  X->>C: controller.abort
+  C->>C: abortEntry：phase=aborted<br/>未消费的插话交给 onSteeringDiscarded('abort')
+  C->>R: signal.abort(reason)
+  R->>R: 结束工具进程，排空事件，对齐历史，终态 aborted（第 2 章）
+  R-->>K: Host 的结局 aborted
+--- 协调者先做 `commitDiscardedSteering`（`execution.coordinator.ts` L299）：落下来的插话并入会话。stop 之后马上 send 的新 Turn 读历史时必须能读到它们，最多等 2 秒，超时不阻塞释放。
+sequenceDiagram
+  participant U as 用户 / 适配器
+  participant X as TurnExecutionService.abort
+  participant C as TurnController
+  participant R as 运行中的 Turn<br/>Pi Agent 与工具
+  participant K as ExecutionCoordinator<br/>settleAndRelease
+  participant DB as 数据库
+  participant Q as 队列派发器
+  U->>X: abort，reason=user_stop
+  X->>C: controller.abort
+  C->>C: abortEntry：phase=aborted<br/>未消费的插话交给 onSteeringDiscarded('abort')
+  C->>R: signal.abort(reason)
+  R->>R: 结束工具进程，排空事件，对齐历史，终态 aborted（第 2 章）
+  R-->>K: Host 的结局 aborted
+  K->>K: commitDiscardedSteering：落下来的插话并入会话，最多等 2 秒
+--- `settle`（L301-L308）在**一个事务**里更新 Turn 状态、释放会话锁，并写队列暂停（原因 `user_stop`）。失败会重试一次。
+sequenceDiagram
+  participant U as 用户 / 适配器
+  participant X as TurnExecutionService.abort
+  participant C as TurnController
+  participant R as 运行中的 Turn<br/>Pi Agent 与工具
+  participant K as ExecutionCoordinator<br/>settleAndRelease
+  participant DB as 数据库
+  participant Q as 队列派发器
+  U->>X: abort，reason=user_stop
+  X->>C: controller.abort
+  C->>C: abortEntry：phase=aborted<br/>未消费的插话交给 onSteeringDiscarded('abort')
+  C->>R: signal.abort(reason)
+  R->>R: 结束工具进程，排空事件，对齐历史，终态 aborted（第 2 章）
+  R-->>K: Host 的结局 aborted
+  K->>K: commitDiscardedSteering：落下来的插话并入会话，最多等 2 秒
+  K->>DB: settle：一个事务里更新 Turn 状态、释放会话锁、写队列暂停
+--- 数据库结算成功才 `controller.complete`（L313）：删除内存里的所有权，同步通知 `onReleased`。此时 `abort()` 的 Promise 才兑现；等满 5 秒仍未释放则是 `abort-timeout`，**超时不是释放**。
+sequenceDiagram
+  participant U as 用户 / 适配器
+  participant X as TurnExecutionService.abort
+  participant C as TurnController
+  participant R as 运行中的 Turn<br/>Pi Agent 与工具
+  participant K as ExecutionCoordinator<br/>settleAndRelease
+  participant DB as 数据库
+  participant Q as 队列派发器
+  U->>X: abort，reason=user_stop
+  X->>C: controller.abort
+  C->>C: abortEntry：phase=aborted<br/>未消费的插话交给 onSteeringDiscarded('abort')
+  C->>R: signal.abort(reason)
+  R->>R: 结束工具进程，排空事件，对齐历史，终态 aborted（第 2 章）
+  R-->>K: Host 的结局 aborted
+  K->>K: commitDiscardedSteering：落下来的插话并入会话，最多等 2 秒
+  K->>DB: settle：一个事务里更新 Turn 状态、释放会话锁、写队列暂停
+  K->>C: controller.complete：删除内存里的所有权，通知 onReleased
+  C-->>X: abort 的 Promise 兑现，aborted
+  X-->>U: 成功（等满 5 秒仍未释放则是 abort-timeout）
+--- 最后决定要不要唤醒派发器（L321-L327）：`outcome` 是 `aborted`，不唤醒。队列已写下暂停，所以停止之后下一句不会自己跑起来，要等用户点继续。
 sequenceDiagram
   participant U as 用户 / 适配器
   participant X as TurnExecutionService.abort
@@ -304,7 +441,7 @@ sequenceDiagram
   X-->>U: 成功（等满 5 秒仍未释放则是 abort-timeout）
   K--xQ: outcome 是 aborted，不唤醒派发器
   U->>Q: 用户点继续，队列才重新开始
-```
+:::
 
 ### abort 要等 Turn 真的放手
 
@@ -427,23 +564,54 @@ Learn Pi Agent 第 3 章留下过一个问题：取消之后，排队的消息�
 
 回执和确认是两个动作，分在两个方法里，崩溃窗口就在它们之间：
 
+::: tabs
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/session-system/queue/repo/drizzle.ts#L346-L369 hl=359-363
+确认是队列一侧的动作：先问 Turn 一侧的 `acceptanceLookup`，回执对得上才确认。
+@@ host
 @code host/src/queue.mjs#L176-L198 hl=181,184,194-197
+`recordIngress` 写 Turn 一侧的回执，`acknowledge` 在回执缺失时抛错。
+:::
 
 `recordIngress` 是 Turn 一侧的动作（对应 `insertAdmission`），`acknowledge` 是队列一侧的动作（对应 `acknowledgeClaim`）：`acknowledge` 在回执缺失时抛错。`accept(id, turnId)` 是旧接口，先后调用这两个，所以 `app.mjs` 不用改。
 
 恢复：
 
+::: tabs
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/session-system/queue/repo/drizzle.ts#L477-L501 hl=479-482,487-488
+没有投递尝试而且有回执就补确认；其他情况放回队列，发 `requeued` 事实。
+@@ host
 @code host/src/queue.mjs#recover hl=256-258
+比 MiniMax 少一个分支：claim 不再有主人就放回队列，已 `accepted` 的只报告。
+:::
 
 只有两行有内容。claim 的主人不是自己、或者租约过期，就放回队列；已经 `accepted` 的不动，只在返回值里报告。
 
 收件箱的“关门”：
 
+::: tabs
+@@ Pi
+@mm third_party/pi-mono/packages/agent/src/agent.ts#L288-L302
+Pi 的收件箱只有入队：`steer` 和 `followUp` 各往内存里的一个队列推一条，取出的时机由循环决定（第 3 章）。
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/execution/turn-controller/turn.controller.ts#L415-L443 hl=429,434-436,440-442
+三个条件：有插话正在被消费、机器插话还在等，都不能关；剩下的用户插话交给 `exit-close`。
+@@ host
 @code host/src/queue.mjs#tryBeginClose hl=378-381,382-384
+三个条件逐行对应上游。
+:::
 
 三个条件和上游 L429、L434-436、L440-442 逐行对应，上一节的实验已经证明了两边的结果一致。出口的路由：
 
+::: tabs
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/execution/steering/steering-requeue.ts#L358-L360
+`exit-close` 回到队列最前面，其余（`abort`、`abnormal-seal`）并入会话。
+@@ host
 @code host/src/queue.mjs#routeDiscardedSteering hl=422-428,430
+缩小版：同样按出口原因分两条路，机器插话丢弃。
+:::
 
 最后是分叉：
 

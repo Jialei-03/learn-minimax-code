@@ -77,6 +77,89 @@ flowchart TD
   RC --> S3["ACP：acp/agent 转成 session/update 和 stopReason"]
 ```
 
+上面是全景。换成一次具体的 `mcode exec "跑测试"`，看它一步步怎样走到两个汇合点：
+
+::: steps 一次 mcode exec 怎样走到两个汇合点
+--- 命令行进来。`main.ts` 的 `runTuiCli` 只做进程级的事（进程标题、Node 版本、代理），然后把控制权交给 `createTuiProgram`；它不碰 Agent。
+flowchart TD
+  ARGV["argv<br/>mcode exec"]:::on --> MAIN["main.ts · runTuiCli<br/>进程级"]:::on
+  MAIN --> PROG["program.ts · createTuiProgram"]:::dim
+  PROG --> LT["launchTui"]:::dim
+  PROG --> RE["runTuiExecCommand"]:::dim
+  PROG --> RA["runTuiAcpCommand"]:::dim
+  LT --> CR["汇合点一<br/>createTuiRuntime"]:::dim
+  RE --> CR
+  RA --> CR
+  CR --> ADP["runtime.adapter<br/>包着 host.cliService"]:::dim
+  ADP --> RC["汇合点二<br/>TuiRunCoordinator"]:::dim
+  RC --> OUT["headless/runner<br/>编码输出 · 退出码"]:::dim
+--- `createTuiProgram` 里 commander 解析参数，选中 `exec` 子命令，调用**注入进来**的 `runExec`。只有被选中的这条命令的模块才会被 `import()` 加载，`launcher.js` 和 ACP 的模块根本不会进来。
+flowchart TD
+  ARGV["argv<br/>mcode exec"]:::done --> MAIN["main.ts · runTuiCli<br/>进程级"]:::done
+  MAIN --> PROG["program.ts · createTuiProgram"]:::on
+  PROG --> LT["launchTui"]:::dim
+  PROG --> RE["runTuiExecCommand"]:::on
+  PROG --> RA["runTuiAcpCommand"]:::dim
+  LT --> CR["汇合点一<br/>createTuiRuntime"]:::dim
+  RE --> CR
+  RA --> CR
+  CR --> ADP["runtime.adapter<br/>包着 host.cliService"]:::dim
+  ADP --> RC["汇合点二<br/>TuiRunCoordinator"]:::dim
+  RC --> OUT["headless/runner<br/>编码输出 · 退出码"]:::dim
+--- `runTuiExecCommand` 用 `prepareTuiDataDir()` 找到数据目录，把 `--permission` 翻译成 `permissionMode`，然后调用 `createTuiRuntime({ surface: 'headless' })`。这是**汇合点一**：`mcode` 和 `mcode acp` 调的是同一个函数，只是 `surface` 不同。
+flowchart TD
+  ARGV["argv<br/>mcode exec"]:::done --> MAIN["main.ts · runTuiCli<br/>进程级"]:::done
+  MAIN --> PROG["program.ts · createTuiProgram"]:::done
+  PROG --> LT["launchTui"]:::dim
+  PROG --> RE["runTuiExecCommand"]:::done
+  PROG --> RA["runTuiAcpCommand"]:::dim
+  LT --> CR["汇合点一<br/>createTuiRuntime"]:::on
+  RE --> CR
+  RA --> CR
+  CR --> ADP["runtime.adapter<br/>包着 host.cliService"]:::dim
+  ADP --> RC["汇合点二<br/>TuiRunCoordinator"]:::dim
+  RC --> OUT["headless/runner<br/>编码输出 · 退出码"]:::dim
+--- 运行时由 `createEmbeddedRuntimeHost` 装配好，入口拿到的 `runtime.adapter` 包着 `host.cliService`。从这里往下，三个入口说的是同一份能力清单，`surface` 只决定 `lifecycle.ts` 里那七行开关。
+flowchart TD
+  ARGV["argv<br/>mcode exec"]:::done --> MAIN["main.ts · runTuiCli<br/>进程级"]:::done
+  MAIN --> PROG["program.ts · createTuiProgram"]:::done
+  PROG --> LT["launchTui"]:::dim
+  PROG --> RE["runTuiExecCommand"]:::done
+  PROG --> RA["runTuiAcpCommand"]:::dim
+  LT --> CR["汇合点一<br/>createTuiRuntime"]:::done
+  RE --> CR
+  RA --> CR
+  CR --> ADP["runtime.adapter<br/>包着 host.cliService"]:::on
+  ADP --> RC["汇合点二<br/>TuiRunCoordinator"]:::dim
+  RC --> OUT["headless/runner<br/>编码输出 · 退出码"]:::dim
+--- **汇合点二**：入口 `new` 一个 `TuiRunCoordinator` 来驱动这次运行。取消句柄、超时、“同一个客户端同时只能有一次运行”的保护都在这个类里，三个入口谁也不重写。
+flowchart TD
+  ARGV["argv<br/>mcode exec"]:::done --> MAIN["main.ts · runTuiCli<br/>进程级"]:::done
+  MAIN --> PROG["program.ts · createTuiProgram"]:::done
+  PROG --> LT["launchTui"]:::dim
+  PROG --> RE["runTuiExecCommand"]:::done
+  PROG --> RA["runTuiAcpCommand"]:::dim
+  LT --> CR["汇合点一<br/>createTuiRuntime"]:::done
+  RE --> CR
+  RA --> CR
+  CR --> ADP["runtime.adapter<br/>包着 host.cliService"]:::done
+  ADP --> RC["汇合点二<br/>TuiRunCoordinator"]:::on
+  RC --> OUT["headless/runner<br/>编码输出 · 退出码"]:::dim
+--- 运行结束，结局交回入口。`exec` 的 `headless/runner` 把结局编码成输出并算出退出码，`runTuiCli` 排空 stdout 和 stderr 后调用 `processRef.exit`。运行时对退出码一无所知。
+flowchart TD
+  ARGV["argv<br/>mcode exec"]:::done --> MAIN["main.ts · runTuiCli<br/>进程级"]:::done
+  MAIN --> PROG["program.ts · createTuiProgram"]:::done
+  PROG --> LT["launchTui"]:::dim
+  PROG --> RE["runTuiExecCommand"]:::done
+  PROG --> RA["runTuiAcpCommand"]:::dim
+  LT --> CR["汇合点一<br/>createTuiRuntime"]:::done
+  RE --> CR
+  RA --> CR
+  CR --> ADP["runtime.adapter<br/>包着 host.cliService"]:::done
+  ADP --> RC["汇合点二<br/>TuiRunCoordinator"]:::done
+  RC --> OUT["headless/runner<br/>编码输出 · 退出码"]:::on
+:::
+
 ### 命令行进程：`main.ts` 管进程，不管 Agent
 
 `runTuiCli` 先做进程级的事：设进程标题、检查 Node 版本、配置网络代理，然后把控制权交给 `createTuiProgram`（第 0 章看过它怎样注册 `exec` 和 `acp`）。真正干活的函数是**注入**进去的，`dependencies.runExec ?? defaultRunExec`。三个默认实现是这样的：
@@ -256,6 +339,76 @@ stateDiagram-v2
 
 于是有两种回收原因：**租约到期**（持有者可能还活着但卡死了），和**持有者的进程已不在**（立刻回收）。
 
+把前面几节串起来，看两个进程抢一个会话时，那一行锁怎样变化：
+
+::: steps 两个进程抢同一个会话：准入、拒绝、回收
+--- 终端里的进程 P 先发消息。`admitTurnInTransaction` 在 `BEGIN IMMEDIATE` 事务里先回收（没有过期的锁），再看锁（没有），最后 `insertAdmission` 写入一行：`ownerId` 是 P，`expiresAtMs` 是现在加 `leaseMs`。
+sequenceDiagram
+  participant P as 进程 P（终端）
+  participant DB as session_locks（SQLite）
+  participant Q as 进程 Q（编辑器）
+  rect rgb(255, 237, 224)
+  P->>DB: admit · 回收（无）· 看锁（无）
+  DB-->>P: insertAdmission · 一行锁，owner 是 P
+  end
+--- P 的 Turn 在跑，控制器每 10 秒续一次租约。续租是带条件的 `UPDATE`：`ownerId` 还是自己并且没过期才改成功（`changes === 1`）。
+sequenceDiagram
+  participant P as 进程 P（终端）
+  participant DB as session_locks（SQLite）
+  participant Q as 进程 Q（编辑器）
+  P->>DB: admit · 回收（无）· 看锁（无）
+  DB-->>P: insertAdmission · 一行锁，owner 是 P
+  rect rgb(255, 237, 224)
+  P->>DB: renew · 每 10 秒
+  DB-->>P: changes 为 1
+  end
+--- Q 也发来消息。事务里先回收：锁没过期，持有者 P 的进程还在，没有可回收的。再看锁：有，拒绝，原因 `active-turn`；Application 把它翻译成 409 和 `local_session_busy`。模型一次都没被调用。
+sequenceDiagram
+  participant P as 进程 P（终端）
+  participant DB as session_locks（SQLite）
+  participant Q as 进程 Q（编辑器）
+  P->>DB: admit · 回收（无）· 看锁（无）
+  DB-->>P: insertAdmission · 一行锁，owner 是 P
+  P->>DB: renew · 每 10 秒
+  DB-->>P: changes 为 1
+  rect rgb(255, 237, 224)
+  Q->>DB: admit · 回收（无可回收）· 看锁（有）
+  DB-->>Q: rejected · active-turn
+  Note over Q: 翻译成 409 local_session_busy
+  end
+--- P 的进程被 `kill -9`，没来得及释放。锁还留在表里，但没人再续租。
+sequenceDiagram
+  participant P as 进程 P（终端）
+  participant DB as session_locks（SQLite）
+  participant Q as 进程 Q（编辑器）
+  P->>DB: admit · 回收（无）· 看锁（无）
+  DB-->>P: insertAdmission · 一行锁，owner 是 P
+  P->>DB: renew · 每 10 秒
+  DB-->>P: changes 为 1
+  Q->>DB: admit · 回收（无可回收）· 看锁（有）
+  DB-->>Q: rejected · active-turn
+  rect rgb(255, 237, 224)
+  Note over P: 进程已死 · 不再续租
+  end
+--- Q 重试。准入开头先回收：`identity.ts` 判断持有者的进程已不在（或者租约到期），把 P 最后一个 `accepted` 的 Turn 标成 `failed`，删掉锁，产生终态事实。回收完，Q 再看锁，已经空了，于是插入自己的锁。不必等满 30 分钟。
+sequenceDiagram
+  participant P as 进程 P（终端）
+  participant DB as session_locks（SQLite）
+  participant Q as 进程 Q（编辑器）
+  P->>DB: admit · 回收（无）· 看锁（无）
+  DB-->>P: insertAdmission · 一行锁，owner 是 P
+  P->>DB: renew · 每 10 秒
+  DB-->>P: changes 为 1
+  Q->>DB: admit · 回收（无可回收）· 看锁（有）
+  DB-->>Q: rejected · active-turn
+  Note over P: 进程已死 · 不再续租
+  rect rgb(255, 237, 224)
+  Q->>DB: admit · 回收（P 的进程已不在）
+  Note over DB: P 的 Turn 标成 failed · 删锁
+  DB-->>Q: insertAdmission · 一行锁，owner 是 Q
+  end
+:::
+
 ### 别的进程持有的 Turn：能看，不能动
 
 最后一个问题：TUI 打开了一个正被另一个进程运行的会话，它能做什么？
@@ -353,13 +506,23 @@ MiniMax 把分支提到最前面：子命令一选定，后面的代码只属于
 
 `tui` 共用一个协调器，加一句状态行文字；`exec` 每次新建一个协调器，先 `resolveExecSession`（`--session`、`--continue`、新建；相对目录在这里变绝对），再把结局变成退出码（`exitCodeOf` 的数值和 MiniMax 的 `MINIMAX_CODE_EXEC_EXIT_CODES` 一致，实验对照过）；`acp` 在一条连接的闭包里记着每个会话的协调器，`session/prompt` 的结局变成 `stopReason` 或 `-32603`。三个入口没有一行保存历史或“忙”的代码。
 
-“忙”在 `Sessions.admit` 里。顺序和 `admitTurnInTransaction` 一致，先回收再检查：
+“忙”在 `Sessions.admit` 里。顺序和 `admitTurnInTransaction` 一致，先回收再检查。同一件事——“这个会话现在能不能开工”——在三份代码里的写法，切换标签对照着看：
 
-@code host/src/sessions.mjs#admit hl=203-206,208-217,223-224,234
+::: tabs
+@@ Pi
+@pi packages/coding-agent/src/core/agent-session.ts#L1494-L1497 hl=1495-1496
+一个进程内存里的布尔值，没有租约，也没有跨进程的保护。
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/persistence/turn.repository.ts#L771-L828 hl=783-788,789,790-796,797-800,820-827
+同一个数据库事务里：先看会话，再回收，再看锁，最后插入一行带租约的锁。
+@@ host
+@code host/src/sessions.mjs#admit hl=223,224-225,228-235,242,254
+同样的顺序，锁记在共享的日志里：回收、检查、`acquire`、续租定时器、只在自己仍是持有者时才 `release`。
+:::
 
-第 204 行先回收，第 205～206 行再看有没有持有者；拿到之后在锁日志里写一条 `acquire`，启动续租定时器（第 223 行，对应控制器每 10 秒一次的 `renew`）。释放函数只在自己仍是持有者时才写 `release`（第 234 行），租约早已被回收就返回 `false`，不替新的持有者释放锁。回收的两个原因：
+第 223 行先回收，第 224～225 行再看有没有持有者；拿到之后在锁日志里写一条 `acquire`，启动续租定时器（第 242 行，对应控制器每 10 秒一次的 `renew`）。释放函数只在自己仍是持有者时才写 `release`（第 254 行），租约早已被回收就返回 `false`，不替新的持有者释放锁。回收的两个原因：
 
-@code host/src/sessions.mjs#recoverStale hl=264-265
+@code host/src/sessions.mjs#recoverStale hl=283-284
 
 简化的地方：MiniMax 的锁在 SQLite 里，靠主键和 `BEGIN IMMEDIATE` 事务保证两个进程不会同时拿到锁；host 的锁在只追加日志里，靠同步写入保证顺序，演示的是租约的**规则**，不是并发控制本身。存活判断只用 `process.kill(pid, 0)`，没有 lockfile 心跳，所以防不住 PID 复用。host 的 `Sessions` 够不到 Turn 的控制器，丢租约的 Turn 不会被主动中止，只会在它下一次写历史时被 `append` 挡下，以 `history / persistence` 失败结束（第 2 章的失败归因）。
 

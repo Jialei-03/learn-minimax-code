@@ -107,6 +107,88 @@ SDK 拿到这样的流，靠 74 行的 `ItemAccumulator` 还原。整个文件�
 
 最后一个细节在 `toThreadItem`（L62-L63）：没有收到 `item.completed` 的 item 带上 `incomplete: true`。被取消的 Turn 里，说了一半的话和没跑完的命令都还在，只是标明没完。
 
+先按事件顺序走一遍，看三条规则在哪一步起作用：
+
+::: steps ItemAccumulator 折叠十个事件：重复快照丢弃，增量照收
+--- **第一个事件**：`item.started`，消息 a，`contentDelta` 是“ha”。`states` 里没有 a，创建状态，文字追加。规则一：按 id 合并（`items.ts` L34-L47）。
+flowchart LR
+  EV["#1 item.started a<br/>+“ha”"]:::on
+  ACC["ItemAccumulator<br/>按 id 找状态，创建或修改"]:::on
+  A["消息 a<br/>ha"]:::on
+  R["思考 r<br/>（还没出现）"]:::dim
+  T["工具 t<br/>（还没出现）"]:::dim
+  EV --> ACC
+  ACC --> A
+  ACC --> R
+  ACC --> T
+--- **工具快照**：`item.updated`，工具 t，状态 4（生成参数）。没有 `contentDelta`，当作快照；t 是新 id，创建状态，记下序列化后的快照。
+flowchart LR
+  EV["#2 item.updated t<br/>快照：状态 4"]:::on
+  ACC["ItemAccumulator<br/>按 id 找状态，创建或修改"]:::on
+  A["消息 a<br/>ha"]:::done
+  R["思考 r<br/>（还没出现）"]:::dim
+  T["工具 t<br/>状态 4（生成参数）"]:::on
+  EV --> ACC
+  ACC --> A
+  ACC --> R
+  ACC --> T
+--- **重复快照被丢弃**：第 3 个事件和上一份快照一字不差。有状态、是 `item.updated`、是快照、内容相同、item 没完成，五个条件齐了，`apply` 返回 `false`（规则二，L33-L43）。
+flowchart LR
+  EV["#3 item.updated t<br/>同一份快照"]:::on
+  ACC["ItemAccumulator<br/>按 id 找状态，创建或修改"]:::on
+  A["消息 a<br/>ha"]:::done
+  R["思考 r<br/>（还没出现）"]:::dim
+  T["工具 t<br/>状态 4（重复，丢弃）"]:::on
+  EV --> ACC
+  ACC --> A
+  ACC --> R
+  ACC --> T
+--- **增量不去重**：第 4 个事件又是消息 a 的“ha”。增量的 `snapshot` 是空串，走不进丢弃分支，`apply` 返回 `true`，a 变成 `haha`。“ha”之后再来“ha”是新文字。
+flowchart LR
+  EV["#4 item.updated a<br/>+“ha”"]:::on
+  ACC["ItemAccumulator<br/>按 id 找状态，创建或修改"]:::on
+  A["消息 a<br/>haha"]:::on
+  R["思考 r<br/>（还没出现）"]:::dim
+  T["工具 t<br/>状态 4"]:::done
+  EV --> ACC
+  ACC --> A
+  ACC --> R
+  ACC --> T
+--- **交错**：思考 r 的两个增量（#5、#6）插进来，各追加“想”，得到“想想”。输出按首次出现排序，事件交错没有影响。
+flowchart LR
+  EV["#5、#6 r 的增量<br/>+“想” +“想”"]:::on
+  ACC["ItemAccumulator<br/>按 id 找状态，创建或修改"]:::on
+  A["消息 a<br/>haha"]:::done
+  R["思考 r<br/>想想"]:::on
+  T["工具 t<br/>状态 4"]:::done
+  EV --> ACC
+  ACC --> A
+  ACC --> R
+  ACC --> T
+--- **快照整体替换**：#7、#8 工具 t 的状态走到 1、2，`toolCall` 每次整体替换，后到的快照就是当前状态（L49-L52 里 `toolCall` 的赋值）。
+flowchart LR
+  EV["#7、#8 t 的快照<br/>状态 1 → 状态 2"]:::on
+  ACC["ItemAccumulator<br/>按 id 找状态，创建或修改"]:::on
+  A["消息 a<br/>haha"]:::done
+  R["思考 r<br/>想想"]:::done
+  T["工具 t<br/>状态 2（完成），带 input 和 output"]:::on
+  EV --> ACC
+  ACC --> A
+  ACC --> R
+  ACC --> T
+--- **完成帧**：#9 `item.completed` a 带整段文字“haha”，规则三：`content` **替换**增量，不是追加，仍是 `haha`，标记已完成。#10 t 也完成。r 一直没有 `item.completed`，所以 `toThreadItem` 给它加上 `incomplete: true`（L62-L63）。
+flowchart LR
+  EV["#9、#10 item.completed<br/>a 和 t"]:::on
+  ACC["ItemAccumulator<br/>按 id 找状态，创建或修改"]:::on
+  A["消息 a<br/>haha（完成）"]:::done
+  R["思考 r<br/>想想（incomplete）"]:::on
+  T["工具 t<br/>状态 2（完成）"]:::done
+  EV --> ACC
+  ACC --> A
+  ACC --> R
+  ACC --> T
+:::
+
 不读源码也能感受到每条规则是怎么来的。下面的实验造了一段会同时撞上三个坑的流：消息 a 和思考 r 的文字是内容相同的增量，工具 t 有一份重复快照，三者交错，最后 r 没有完成。先看真实折叠器一步一步做了什么，再看五种朴素做法，每种只在一条规则上与上游不同：
 
 @lab node labs/ch10/accumulate.mjs | md
@@ -189,6 +271,124 @@ CLI 一侧为什么敢保证“有结果就在最后”？看 `runTuiExec` 的�
 @mm packages/tui/src/headless/runner.ts#L484-L490 hl=486,489
 
 注释写得直白：前面的事件行还卡在管道里（读者不读了），结果就**不写**，“退出码承载结局”。所以梯子上第四级不只是进程崩溃时的兜底，CLI 自己也会走到那里。
+
+::: steps 没有 exec.completed 的进程退出：判定梯子一级一级往下
+--- 一次 `mcode exec` 子进程退出了，退出码是 0，但 stdout 里没有 `exec.completed`。`ExecProcess.settle`（`exec-process.ts` L298-L328）按固定梯子判定，从上往下。
+flowchart TD
+  S["进程退出<br/>ExecProcess.settle(code, signal)"]:::on
+  Q1{"收到过 exec.completed？"}:::dim
+  OK["以信封里的 status 为准<br/>不再看退出码"]:::dim
+  Q2{"SDK 因 timeoutMs<br/>强杀过进程？"}:::dim
+  TO["MCodeRunError<br/>status = timeout"]:::dim
+  Q3{"SDK 自己发起过取消<br/>并且退出码不是 2？"}:::dim
+  AB["MCodeAbortError"]:::dim
+  EX["errorForExit(退出码)"]:::dim
+  Q4{"退出码是 0？"}:::dim
+  PE["MCodeProtocolError<br/>mcode exited without emitting exec.completed"]:::dim
+  OT["2 → InvocationError · 130 → AbortError<br/>141 → ProtocolError · 其他 → failed / internal"]:::dim
+  S --> Q1
+  Q1 -- 是 --> OK
+  Q1 -- 否 --> Q2
+  Q2 -- 是 --> TO
+  Q2 -- 否 --> Q3
+  Q3 -- 是 --> AB
+  Q3 -- 否 --> EX
+  EX --> Q4
+  Q4 -- 是 --> PE
+  Q4 -- 否 --> OT
+--- 第一级：`this.completed` 是否置位。没有收到过 `exec.completed`，所以不能以信封里的 `status` 为准，往下走。
+flowchart TD
+  S["进程退出<br/>ExecProcess.settle(code, signal)"]:::done
+  Q1{"收到过 exec.completed？"}:::on
+  OK["以信封里的 status 为准<br/>不再看退出码"]:::dim
+  Q2{"SDK 因 timeoutMs<br/>强杀过进程？"}:::dim
+  TO["MCodeRunError<br/>status = timeout"]:::dim
+  Q3{"SDK 自己发起过取消<br/>并且退出码不是 2？"}:::dim
+  AB["MCodeAbortError"]:::dim
+  EX["errorForExit(退出码)"]:::dim
+  Q4{"退出码是 0？"}:::dim
+  PE["MCodeProtocolError<br/>mcode exited without emitting exec.completed"]:::dim
+  OT["2 → InvocationError · 130 → AbortError<br/>141 → ProtocolError · 其他 → failed / internal"]:::dim
+  S --> Q1
+  Q1 -- 是 --> OK
+  Q1 -- 否 --> Q2
+  Q2 -- 是 --> TO
+  Q2 -- 否 --> Q3
+  Q3 -- 是 --> AB
+  Q3 -- 否 --> EX
+  EX --> Q4
+  Q4 -- 是 --> PE
+  Q4 -- 否 --> OT
+--- 第二、三级：SDK 没有因 `timeoutMs` 强杀过进程（`backstopFired` 为假），也没有发起过取消（`abortRequested` 为假）。两个特殊解释都排除了。
+flowchart TD
+  S["进程退出<br/>ExecProcess.settle(code, signal)"]:::done
+  Q1{"收到过 exec.completed？"}:::done
+  OK["以信封里的 status 为准<br/>不再看退出码"]:::dim
+  Q2{"SDK 因 timeoutMs<br/>强杀过进程？"}:::on
+  TO["MCodeRunError<br/>status = timeout"]:::dim
+  Q3{"SDK 自己发起过取消<br/>并且退出码不是 2？"}:::on
+  AB["MCodeAbortError"]:::dim
+  EX["errorForExit(退出码)"]:::dim
+  Q4{"退出码是 0？"}:::dim
+  PE["MCodeProtocolError<br/>mcode exited without emitting exec.completed"]:::dim
+  OT["2 → InvocationError · 130 → AbortError<br/>141 → ProtocolError · 其他 → failed / internal"]:::dim
+  S --> Q1
+  Q1 -- 是 --> OK
+  Q1 -- 否 --> Q2
+  Q2 -- 是 --> TO
+  Q2 -- 否 --> Q3
+  Q3 -- 是 --> AB
+  Q3 -- 否 --> EX
+  EX --> Q4
+  Q4 -- 是 --> PE
+  Q4 -- 否 --> OT
+--- 第四级：只剩退出码可看，交给 `errorForExit`（`errors.ts` L174-L203）。2、130、141 各有专门的含义，其他码落到 failed。
+flowchart TD
+  S["进程退出<br/>ExecProcess.settle(code, signal)"]:::done
+  Q1{"收到过 exec.completed？"}:::done
+  OK["以信封里的 status 为准<br/>不再看退出码"]:::dim
+  Q2{"SDK 因 timeoutMs<br/>强杀过进程？"}:::done
+  TO["MCodeRunError<br/>status = timeout"]:::dim
+  Q3{"SDK 自己发起过取消<br/>并且退出码不是 2？"}:::done
+  AB["MCodeAbortError"]:::dim
+  EX["errorForExit(退出码)"]:::on
+  Q4{"退出码是 0？"}:::dim
+  PE["MCodeProtocolError<br/>mcode exited without emitting exec.completed"]:::dim
+  OT["2 → InvocationError · 130 → AbortError<br/>141 → ProtocolError · 其他 → failed / internal"]:::dim
+  S --> Q1
+  Q1 -- 是 --> OK
+  Q1 -- 否 --> Q2
+  Q2 -- 是 --> TO
+  Q2 -- 否 --> Q3
+  Q3 -- 是 --> AB
+  Q3 -- 否 --> EX
+  EX --> Q4
+  Q4 -- 是 --> PE
+  Q4 -- 否 --> OT
+--- 退出码 **0**（L192-L194）：进程自己说成功，却没留下结果，这个“成功”不可信，算 `MCodeProtocolError`，带着已收到的 items 和 `sessionId`。
+flowchart TD
+  S["进程退出<br/>ExecProcess.settle(code, signal)"]:::done
+  Q1{"收到过 exec.completed？"}:::done
+  OK["以信封里的 status 为准<br/>不再看退出码"]:::dim
+  Q2{"SDK 因 timeoutMs<br/>强杀过进程？"}:::done
+  TO["MCodeRunError<br/>status = timeout"]:::dim
+  Q3{"SDK 自己发起过取消<br/>并且退出码不是 2？"}:::done
+  AB["MCodeAbortError"]:::dim
+  EX["errorForExit(退出码)"]:::done
+  Q4{"退出码是 0？"}:::on
+  PE["MCodeProtocolError<br/>mcode exited without emitting exec.completed"]:::on
+  OT["2 → InvocationError · 130 → AbortError<br/>141 → ProtocolError · 其他 → failed / internal"]:::dim
+  S --> Q1
+  Q1 -- 是 --> OK
+  Q1 -- 否 --> Q2
+  Q2 -- 是 --> TO
+  Q2 -- 否 --> Q3
+  Q3 -- 是 --> AB
+  Q3 -- 否 --> EX
+  EX --> Q4
+  Q4 -- 是 --> PE
+  Q4 -- 否 --> OT
+:::
 
 下面的实验把梯子的每一级都用真实函数跑一遍：
 
@@ -331,7 +531,17 @@ MiniMax 为什么选“一个 Turn 一个进程”？README 没有明说理由�
 
 host 的客户端一侧就是 `collector`。它的核心是直接运行上游的 `ItemAccumulator`，在外面包了一层对账：
 
+::: tabs
+@@ Pi
+@pi packages/coding-agent/src/modes/json-event.ts#L40-L61 hl=41-44
+`message_start` 给初始消息，增量叠加，`message_end` 给权威的完整消息。
+@@ MiniMax
+@mm packages/code-sdk/src/items.ts#L12-L74 hl=33,35-43,48-52,63 collapse=false
+`ItemAccumulator`：按 id 合并，快照去重、增量不去重，完成帧的整段文字覆盖增量。
+@@ host
 @code host/src/sdk.mjs#collector hl=41,45-48,51-53,56,64
+直接运行上游的折叠器，外面多包一层对账：归属、幂等、连续、终态之后不再有帧。
+:::
 
 四道检查对应四种坏情况：别的 Turn 的帧不能污染本 Turn（归属）；序号已经处理过时，内容一致就忽略，不一致就抛冲突（幂等）；序号跳过一格就抛缺口（连续）；终态之后再来帧就抛错。通过之后才交给折叠器。这比上游 SDK 严格：上游信任管道，host 的帧可能来自 `EventStore.replay`，会有重叠、会有补发。
 
@@ -339,13 +549,27 @@ host 的客户端一侧就是 `collector`。它的核心是直接运行上游的
 
 `Thread.run` 的收尾对应 `requireSuccess`：
 
+::: tabs
+@@ MiniMax
+@mm packages/code-sdk/src/thread.ts#L54-L81 hl=59-62,64-69,72
+没有 `exec.completed` 抛协议错误；状态不是 `succeeded` 抛错并带上 items；成功才返回 `Turn`。
+@@ host
 @code host/src/sdk.mjs#requireSuccess
+只有 `completed` 才返回，其余抛 `TurnError`，带着状态、items 和 `sessionId`。
+:::
 
 只有 `completed` 才返回，其余抛 `TurnError`，错误上带着状态、已经收到的 items（未完成的标着 `incomplete`）和 `sessionId`。`incomplete` 是 host 特有的第三种情形：流在终态之前就断了。上游那时没有 `exec.completed`，改看进程的退出码；host 没有进程，只剩“没有终态”这个事实。
 
 服务端是 `EventStore`：
 
+::: tabs
+@@ MiniMax
+@mm packages/tui/src/headless/supervisor.ts#L89-L124 hl=91-98,99-107,114-118
+`ExecRunSupervisor` 记下 `seenCursors` 和 `seenMessageIds`，重叠的帧在投影前被丢掉；游标失效要求重新同步。
+@@ host
 @code host/src/events.mjs#EventStore hl=97-101,114-124
+`append` 保证每个 Turn 的序号是干净的 1、2、3……；`replay` 把游标变成 seq，无效游标抛错而不是返回空。
+:::
 
 `append` 的三条规则（有身份、序号是下一个、终态是最后一帧）保证了存下来的每个 Turn 都是干净的 1、2、3……`replay(turnId, afterSeq)` 把游标变成 seq，游标超过最后一帧时抛“无效游标”而不是返回空数组：空数组会让客户端以为已经追平。上游的环可能把旧帧挤出去（`evicted`），要发 `resync-required`；host 的 Journal 不会丢，所以只剩无效游标一种。
 

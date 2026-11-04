@@ -97,9 +97,19 @@ flowchart TD
 
 ### 谁来补洞：MiniMax 丢，Pi 补
 
-Pi 对“有调用没结果”的处理在另一头。MiniMax 内置的 Pi 在各家模型的适配层里做这件事：
+Pi 对“有调用没结果”的处理在另一头。MiniMax 内置的 Pi 在各家模型的适配层里做这件事。同一个问题——“工具调用和结果对不上”——两边各管一头，host 的投影也在这里，切换标签对照着看：
 
+::: tabs
+@@ Pi
 @mm third_party/pi-mono/packages/ai/src/providers/transform-messages.ts#L155-L177 hl=160-173
+遇到没有结果的调用，就地补一条 `"No result provided"` 的错误结果。
+@@ MiniMax
+@mm packages/agent-core/src/pi-turn-runner/outbound-message-normalizer.ts#L174-L192 hl=178-187
+`seenToolCallIds` 一路记下见过的调用 id，结果只有在它的调用已出现时才保留，否则丢掉。
+@@ host
+@code host/src/history.mjs#projectOutbound
+发给模型的历史是投影副本：`orphanResults` 丢孤儿结果，限制图片数量，原历史一个字都不改。
+:::
 
 遇到没有结果的调用，就地补一条 `"No result provided"` 的错误结果，让请求合法。所以一次请求要过两道工序：MiniMax 的投影先**丢**孤儿结果，Pi 的适配层再**补**缺失的结果。这和 Learn Pi Agent 第 7 章是同一件事；MiniMax 比 Pi 多做的，是它同时也在**存档**这一头做了清理，下一节讲。
 
@@ -151,6 +161,221 @@ flowchart TD
   E -. 服务商出错，重试一次仍失败 .-> X
   X --> Z
 ```
+
+先用一次具体的压缩，把图里的框一个个走过：
+
+::: steps 一次自动压缩走过的钩子
+--- 你发出下一条消息，历史约 15 万 token。Pi 在请求模型之前调用 `transformContext`，MiniMax 在这里挂上的 `beforeLlmCall` 钩子被触发（第一次叫 `initial`，之后每轮工具跑完叫 `iteration`）。
+flowchart TD
+  A["Pi 要请求模型<br/>transformContext"]:::on
+  B["beforeLlmCall 钩子<br/>createAutomaticContextCompactionHook"]:::on
+  C{"投影后的大小 > 触发线？<br/>或服务商刚拒绝过？"}:::dim
+  Z["照常请求模型"]:::dim
+  D["选摘要输入<br/>h0 → hall → hmid → hmin"]:::dim
+  E["请求模型写 checkpoint<br/>不许调用工具，历史是不可信数据"]:::dim
+  F{"validateCheckpointGeneration<br/>硬性无效？"}:::dim
+  G["buildCheckpointMessage<br/>摘要 + 存档位置 + 宿主核实的附录"]:::dim
+  H{"换完之后放得下？<br/>手动 /compact 不查"}:::dim
+  I["history.replace<br/>发布 snapshots/，原子替换 messages.jsonl"]:::dim
+  Y["before_llm_checkpoint_persistence_failed<br/>Turn 失败，不请求模型"]:::dim
+  X["敞开：记录失败，skip<br/>带着压缩前的历史继续"]:::dim
+  A --> B
+  B --> C
+  C -->|否| Z
+  C -->|是| D
+  D --> E
+  E --> F
+  F -->|否| G
+  G --> H
+  H -->|是| I
+  I -->|成功| Z
+  I -.失败：闭合.-> Y
+  F -.是.-> X
+  H -.否.-> X
+  D -.都放不下.-> X
+  E -.服务商出错，重试一次仍失败.-> X
+  X --> Z
+--- 钩子先问一个便宜的问题：投影之后的大小有没有越过触发线？窗口 20 万、最大输出 6.4 万时触发线是 142,500，15 万越线，所以继续；没越线就直接请求模型。服务商刚拒绝过上一次请求（`recovering`）也会走“是”。
+flowchart TD
+  A["Pi 要请求模型<br/>transformContext"]:::done
+  B["beforeLlmCall 钩子<br/>createAutomaticContextCompactionHook"]:::done
+  C{"投影后的大小 > 触发线？<br/>或服务商刚拒绝过？"}:::on
+  Z["照常请求模型"]:::dim
+  D["选摘要输入<br/>h0 → hall → hmid → hmin"]:::dim
+  E["请求模型写 checkpoint<br/>不许调用工具，历史是不可信数据"]:::dim
+  F{"validateCheckpointGeneration<br/>硬性无效？"}:::dim
+  G["buildCheckpointMessage<br/>摘要 + 存档位置 + 宿主核实的附录"]:::dim
+  H{"换完之后放得下？<br/>手动 /compact 不查"}:::dim
+  I["history.replace<br/>发布 snapshots/，原子替换 messages.jsonl"]:::dim
+  Y["before_llm_checkpoint_persistence_failed<br/>Turn 失败，不请求模型"]:::dim
+  X["敞开：记录失败，skip<br/>带着压缩前的历史继续"]:::dim
+  A --> B
+  B --> C
+  C -->|否| Z
+  C -->|是| D
+  D --> E
+  E --> F
+  F -->|否| G
+  G --> H
+  H -->|是| I
+  I -->|成功| Z
+  I -.失败：闭合.-> Y
+  F -.是.-> X
+  H -.否.-> X
+  D -.都放不下.-> X
+  E -.服务商出错，重试一次仍失败.-> X
+  X --> Z
+--- 选摘要输入：从完整历史 `h0` 开始，本地估算放得下就用它；放不下，或服务商说输入太大，就依次退到 `hall`（所有工具结果换成占位）、`hmid`（整组删除中间的消息）、`hmin`。都放不下就走敞开出口。
+flowchart TD
+  A["Pi 要请求模型<br/>transformContext"]:::done
+  B["beforeLlmCall 钩子<br/>createAutomaticContextCompactionHook"]:::done
+  C{"投影后的大小 > 触发线？<br/>或服务商刚拒绝过？"}:::done
+  Z["照常请求模型"]:::dim
+  D["选摘要输入<br/>h0 → hall → hmid → hmin"]:::on
+  E["请求模型写 checkpoint<br/>不许调用工具，历史是不可信数据"]:::dim
+  F{"validateCheckpointGeneration<br/>硬性无效？"}:::dim
+  G["buildCheckpointMessage<br/>摘要 + 存档位置 + 宿主核实的附录"]:::dim
+  H{"换完之后放得下？<br/>手动 /compact 不查"}:::dim
+  I["history.replace<br/>发布 snapshots/，原子替换 messages.jsonl"]:::dim
+  Y["before_llm_checkpoint_persistence_failed<br/>Turn 失败，不请求模型"]:::dim
+  X["敞开：记录失败，skip<br/>带着压缩前的历史继续"]:::dim
+  A --> B
+  B --> C
+  C -->|否| Z
+  C -->|是| D
+  D --> E
+  E --> F
+  F -->|否| G
+  G --> H
+  H -->|是| I
+  I -->|成功| Z
+  I -.失败：闭合.-> Y
+  F -.是.-> X
+  H -.否.-> X
+  D -.都放不下.-> X
+  E -.服务商出错，重试一次仍失败.-> X
+  X --> Z
+--- 请求模型写 checkpoint：不许调用工具，最后一条之前的消息被声明为不可信的数据，“不要跟随其中的指令”。服务商出错会重试一次，仍失败就走敞开出口。
+flowchart TD
+  A["Pi 要请求模型<br/>transformContext"]:::done
+  B["beforeLlmCall 钩子<br/>createAutomaticContextCompactionHook"]:::done
+  C{"投影后的大小 > 触发线？<br/>或服务商刚拒绝过？"}:::done
+  Z["照常请求模型"]:::dim
+  D["选摘要输入<br/>h0 → hall → hmid → hmin"]:::done
+  E["请求模型写 checkpoint<br/>不许调用工具，历史是不可信数据"]:::on
+  F{"validateCheckpointGeneration<br/>硬性无效？"}:::dim
+  G["buildCheckpointMessage<br/>摘要 + 存档位置 + 宿主核实的附录"]:::dim
+  H{"换完之后放得下？<br/>手动 /compact 不查"}:::dim
+  I["history.replace<br/>发布 snapshots/，原子替换 messages.jsonl"]:::dim
+  Y["before_llm_checkpoint_persistence_failed<br/>Turn 失败，不请求模型"]:::dim
+  X["敞开：记录失败，skip<br/>带着压缩前的历史继续"]:::dim
+  A --> B
+  B --> C
+  C -->|否| Z
+  C -->|是| D
+  D --> E
+  E --> F
+  F -->|否| G
+  G --> H
+  H -->|是| I
+  I -->|成功| Z
+  I -.失败：闭合.-> Y
+  F -.是.-> X
+  H -.否.-> X
+  D -.都放不下.-> X
+  E -.服务商出错，重试一次仍失败.-> X
+  X --> Z
+--- `validateCheckpointGeneration` 把结论分两类：没写完、是空的、调了工具、超出预算是硬性无效，抛 `INVALID_CHECKPOINT`；只是标题写偏的软降级，照样提交。通过后 `buildCheckpointMessage` 装成一条 Pi 的原生摘要消息，附上存档位置和宿主核实过的最近用户原话。
+flowchart TD
+  A["Pi 要请求模型<br/>transformContext"]:::done
+  B["beforeLlmCall 钩子<br/>createAutomaticContextCompactionHook"]:::done
+  C{"投影后的大小 > 触发线？<br/>或服务商刚拒绝过？"}:::done
+  Z["照常请求模型"]:::dim
+  D["选摘要输入<br/>h0 → hall → hmid → hmin"]:::done
+  E["请求模型写 checkpoint<br/>不许调用工具，历史是不可信数据"]:::done
+  F{"validateCheckpointGeneration<br/>硬性无效？"}:::on
+  G["buildCheckpointMessage<br/>摘要 + 存档位置 + 宿主核实的附录"]:::on
+  H{"换完之后放得下？<br/>手动 /compact 不查"}:::dim
+  I["history.replace<br/>发布 snapshots/，原子替换 messages.jsonl"]:::dim
+  Y["before_llm_checkpoint_persistence_failed<br/>Turn 失败，不请求模型"]:::dim
+  X["敞开：记录失败，skip<br/>带着压缩前的历史继续"]:::dim
+  A --> B
+  B --> C
+  C -->|否| Z
+  C -->|是| D
+  D --> E
+  E --> F
+  F -->|否| G
+  G --> H
+  H -->|是| I
+  I -->|成功| Z
+  I -.失败：闭合.-> Y
+  F -.是.-> X
+  H -.否.-> X
+  D -.都放不下.-> X
+  E -.服务商出错，重试一次仍失败.-> X
+  X --> Z
+--- 换完之后的请求还放得下吗？放得下才继续。手动 `/compact` 不做这一步核对（`finalAdmission: 'bypass'`）。放不下，走敞开出口。
+flowchart TD
+  A["Pi 要请求模型<br/>transformContext"]:::done
+  B["beforeLlmCall 钩子<br/>createAutomaticContextCompactionHook"]:::done
+  C{"投影后的大小 > 触发线？<br/>或服务商刚拒绝过？"}:::done
+  Z["照常请求模型"]:::dim
+  D["选摘要输入<br/>h0 → hall → hmid → hmin"]:::done
+  E["请求模型写 checkpoint<br/>不许调用工具，历史是不可信数据"]:::done
+  F{"validateCheckpointGeneration<br/>硬性无效？"}:::done
+  G["buildCheckpointMessage<br/>摘要 + 存档位置 + 宿主核实的附录"]:::done
+  H{"换完之后放得下？<br/>手动 /compact 不查"}:::on
+  I["history.replace<br/>发布 snapshots/，原子替换 messages.jsonl"]:::dim
+  Y["before_llm_checkpoint_persistence_failed<br/>Turn 失败，不请求模型"]:::dim
+  X["敞开：记录失败，skip<br/>带着压缩前的历史继续"]:::dim
+  A --> B
+  B --> C
+  C -->|否| Z
+  C -->|是| D
+  D --> E
+  E --> F
+  F -->|否| G
+  G --> H
+  H -->|是| I
+  I -->|成功| Z
+  I -.失败：闭合.-> Y
+  F -.是.-> X
+  H -.否.-> X
+  D -.都放不下.-> X
+  E -.服务商出错，重试一次仍失败.-> X
+  X --> Z
+--- `history.replace`：先存档、再替换（下一个动画细看）。成功，就带着只剩一条摘要加当前用户消息的历史去请求模型。失败是**闭合**的：抛 `before_llm_checkpoint_persistence_failed`，这个 Turn 在请求模型之前就失败，磁盘上仍是完整的旧历史。
+flowchart TD
+  A["Pi 要请求模型<br/>transformContext"]:::done
+  B["beforeLlmCall 钩子<br/>createAutomaticContextCompactionHook"]:::done
+  C{"投影后的大小 > 触发线？<br/>或服务商刚拒绝过？"}:::done
+  Z["照常请求模型"]:::on
+  D["选摘要输入<br/>h0 → hall → hmid → hmin"]:::done
+  E["请求模型写 checkpoint<br/>不许调用工具，历史是不可信数据"]:::done
+  F{"validateCheckpointGeneration<br/>硬性无效？"}:::done
+  G["buildCheckpointMessage<br/>摘要 + 存档位置 + 宿主核实的附录"]:::done
+  H{"换完之后放得下？<br/>手动 /compact 不查"}:::done
+  I["history.replace<br/>发布 snapshots/，原子替换 messages.jsonl"]:::on
+  Y["before_llm_checkpoint_persistence_failed<br/>Turn 失败，不请求模型"]:::dim
+  X["敞开：记录失败，skip<br/>带着压缩前的历史继续"]:::dim
+  A --> B
+  B --> C
+  C -->|否| Z
+  C -->|是| D
+  D --> E
+  E --> F
+  F -->|否| G
+  G --> H
+  H -->|是| I
+  I -->|成功| Z
+  I -.失败：闭合.-> Y
+  F -.是.-> X
+  H -.否.-> X
+  D -.都放不下.-> X
+  E -.服务商出错，重试一次仍失败.-> X
+  X --> Z
+:::
 
 钩子先问一个便宜的问题：
 
@@ -238,6 +463,109 @@ flowchart TD
 - **L308**：`replaceActive` 写临时文件、校验、`rename`。`rename` 之前，原文件始终是完整的。
 - **L309-L315**：再读一遍，确认代数确实是旧代数加一。
 
+一步一步看提交：
+
+::: steps 先存档，再替换，再核对
+--- 摘要写好、校验通过，`transformContext` 钩子（`llm.ts`）先把内存里的 `agent.state.messages` 换成替换后的历史，再 `await history.replace(...)`。
+sequenceDiagram
+  participant K as llm.ts 的钩子
+  participant H as CanonicalHistory
+  participant S as snapshots/
+  participant J as messages.jsonl
+  participant M as 模型
+  rect rgb(255, 237, 224)
+  K->>K: agent.state.messages 换成替换后的历史（内存）
+  K->>H: await history.replace
+  end
+--- `activeGeneration` 读第一条信封上的 `history_artifact.generation`，没有就是第 0 代。替换用的信封先在**内存里**造好：恰好一条原生摘要，加可选的当前用户消息，每条标上新代数和上一代快照的 id 与哈希。出错的话，磁盘还没碰过。
+sequenceDiagram
+  participant K as llm.ts 的钩子
+  participant H as CanonicalHistory
+  participant S as snapshots/
+  participant J as messages.jsonl
+  participant M as 模型
+  K->>K: agent.state.messages 换成替换后的历史（内存）
+  K->>H: await history.replace
+  rect rgb(255, 237, 224)
+  H->>J: activeGeneration · 读第一条信封的 history_artifact
+  Note over H: 内存里造替换信封 · 标代数、llm_checkpoint、上一代快照的 id 和哈希 · 磁盘还没碰
+  end
+--- **先存档**：`publishSnapshot` 把压缩前的完整历史写到 `snapshots/g<代数>--<compactionId>.jsonl`。目标已存在就不覆盖，而是读出已有快照比较语义哈希：相同返回 `already-exists`，不同抛 “snapshot conflict”。
+sequenceDiagram
+  participant K as llm.ts 的钩子
+  participant H as CanonicalHistory
+  participant S as snapshots/
+  participant J as messages.jsonl
+  participant M as 模型
+  K->>K: agent.state.messages 换成替换后的历史（内存）
+  K->>H: await history.replace
+  H->>J: activeGeneration · 读第一条信封的 history_artifact
+  Note over H: 内存里造替换信封 · 标代数、llm_checkpoint、上一代快照的 id 和哈希 · 磁盘还没碰
+  rect rgb(255, 237, 224)
+  H->>S: publishSnapshot · 临时文件 + fsync + 硬链接发布
+  Note over S: g代数--compactionId.jsonl · 已存在则比较语义哈希 · 不覆盖
+  end
+--- **再替换**：`replaceActive` 写临时文件、校验、`rename` 成 `messages.jsonl`。`rename` 之前原文件始终完整。反过来的顺序，存档一崩溃就没有任何地方留着旧历史。
+sequenceDiagram
+  participant K as llm.ts 的钩子
+  participant H as CanonicalHistory
+  participant S as snapshots/
+  participant J as messages.jsonl
+  participant M as 模型
+  K->>K: agent.state.messages 换成替换后的历史（内存）
+  K->>H: await history.replace
+  H->>J: activeGeneration · 读第一条信封的 history_artifact
+  Note over H: 内存里造替换信封 · 标代数、llm_checkpoint、上一代快照的 id 和哈希 · 磁盘还没碰
+  H->>S: publishSnapshot · 临时文件 + fsync + 硬链接发布
+  Note over S: g代数--compactionId.jsonl · 已存在则比较语义哈希 · 不覆盖
+  rect rgb(255, 237, 224)
+  H->>J: replaceActive · 临时文件、校验、rename
+  Note over J: rename 之前原文件始终完整
+  end
+--- **最后核对**：再读一遍，确认代数确实是旧代数加一。成功之后游标推到新历史的末尾，Turn 带着新历史请求模型。
+sequenceDiagram
+  participant K as llm.ts 的钩子
+  participant H as CanonicalHistory
+  participant S as snapshots/
+  participant J as messages.jsonl
+  participant M as 模型
+  K->>K: agent.state.messages 换成替换后的历史（内存）
+  K->>H: await history.replace
+  H->>J: activeGeneration · 读第一条信封的 history_artifact
+  Note over H: 内存里造替换信封 · 标代数、llm_checkpoint、上一代快照的 id 和哈希 · 磁盘还没碰
+  H->>S: publishSnapshot · 临时文件 + fsync + 硬链接发布
+  Note over S: g代数--compactionId.jsonl · 已存在则比较语义哈希 · 不覆盖
+  H->>J: replaceActive · 临时文件、校验、rename
+  Note over J: rename 之前原文件始终完整
+  rect rgb(255, 237, 224)
+  H->>J: 再读一遍 · 代数 = 旧代数 + 1
+  H-->>K: 成功 · 游标推到新历史的末尾
+  K->>M: 带着新历史请求模型
+  end
+--- 失败的情形：提交的任何一点崩溃，旧历史都完整地在某个地方（活动文件或快照）。`replace` 抛出，Turn 在请求模型之前失败，用同一个 compactionId 重试时，发现快照已存在且一致，直接往下做替换。
+sequenceDiagram
+  participant K as llm.ts 的钩子
+  participant H as CanonicalHistory
+  participant S as snapshots/
+  participant J as messages.jsonl
+  participant M as 模型
+  K->>K: agent.state.messages 换成替换后的历史（内存）
+  K->>H: await history.replace
+  H->>J: activeGeneration · 读第一条信封的 history_artifact
+  Note over H: 内存里造替换信封 · 标代数、llm_checkpoint、上一代快照的 id 和哈希 · 磁盘还没碰
+  H->>S: publishSnapshot · 临时文件 + fsync + 硬链接发布
+  Note over S: g代数--compactionId.jsonl · 已存在则比较语义哈希 · 不覆盖
+  H->>J: replaceActive · 临时文件、校验、rename
+  Note over J: rename 之前原文件始终完整
+  H->>J: 再读一遍 · 代数 = 旧代数 + 1
+  H-->>K: 成功 · 游标推到新历史的末尾
+  K->>M: 带着新历史请求模型
+  rect rgb(255, 237, 224)
+  Note over H,J: 若上面任何一步写盘失败：抛 before_llm_checkpoint_persistence_failed
+  Note over K,M: Turn 在请求模型之前失败 · 磁盘仍是完整的旧历史或快照
+  end
+:::
+
 提交的任何一点崩溃，旧历史都完整地在某个地方（活动文件或者快照）。用同一个 compactionId 重试，第 307 行发现快照已存在且一致，直接往下做第 308 行。
 
 这份快照不只是备份。checkpoint 正文里写着 `snapshots/` 的目录，模型需要摘要里没有的精确细节时，用 `read` 工具去读它。存档既是压缩的“撤销键”，也是模型的外部记忆，这也是整份替换历史敢这样做的底气。
@@ -313,7 +641,14 @@ flowchart TD
 
 两个出口共用一个 `deliver`，失败是粘性的。第 2 章里 `turns.mjs` 对 `flush` 的使用没变；`persist` 现在多收到一个 `change`，`reason` 区分是追加还是整份替换。压缩提交：
 
+::: tabs
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/session-system/messages/history/canonical-history-provider.ts#L283-L322 hl=288,294-295,307-308,309-315
+`publishSnapshot` 先于 `replaceActive`，最后核对代数。
+@@ host
 @code host/src/history.mjs#compact hl=452,461-465,467-469
+同样的三步：造信封、`publish` 快照、`replace` 活动文件，再核对代数。
+:::
 
 先造信封，再发布快照，再原子替换，最后核对代数。`CanonicalHistory` 的 `append` 把重试规则和 `settleFailedAppend` 接在一起，`read` 把 `settleEnvelopes` 的修复写回文件。最后是把所有环节串起来的钩子：
 

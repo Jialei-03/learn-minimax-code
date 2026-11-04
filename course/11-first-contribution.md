@@ -46,20 +46,200 @@ MiniMax Code 的 `CONTRIBUTING.md` 开头几行就把门槛写明白了：
 
 两边合起来，一次贡献的路径是这样：
 
-```mermaid
+::: steps 从补丁台账到 Issue 草稿：前半段不需要任何人的许可
+--- 从一条线索开始：补丁台账里的一条补丁，或者一个测试、一次异常。这一步不需要任何人的许可，也还没有任何结论。
 flowchart TD
-  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"] --> B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]
-  B -- "已修复 / 有意如此 / 已被拒绝" --> X["记下结论，换一条线索"]
-  B -- "仍存在" --> C["最小复现<br/>调用真实函数"]
-  C --> D["定位<br/>哪个函数、哪一行、为什么"]
-  D --> E["红绿测试 + 最小补丁"]
-  E --> F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]
-  F --> G["英文 Issue 草稿<br/>你本人审阅后才发"]
-  G -- "非协作者" --> H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]
-  H -- "被邀请成为协作者 / 得到 lgtm" --> I["feature 分支 PR<br/>填模板，pnpm verify"]
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::on
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::dim
+  X["记下结论，换一条线索"]:::dim
+  C["最小复现<br/>调用真实函数"]:::dim
+  D["定位<br/>哪个函数、哪一行、为什么"]:::dim
+  E["红绿测试 + 最小补丁"]:::dim
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::dim
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::dim
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::dim
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::dim
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::dim
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
   G -- "协作者" --> I
-  I --> J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]
-```
+  I --> J
+--- **核对**。四个问题：代码还在吗？上游谈过吗？是缺陷还是取舍？我能写出红测试吗？要同时看固定版本的代码和上游的 Issue，缺一个就容易白干一晚上。
+flowchart TD
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::done
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::on
+  X["记下结论，换一条线索"]:::dim
+  C["最小复现<br/>调用真实函数"]:::dim
+  D["定位<br/>哪个函数、哪一行、为什么"]:::dim
+  E["红绿测试 + 最小补丁"]:::dim
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::dim
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::dim
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::dim
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::dim
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::dim
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
+  G -- "协作者" --> I
+  I --> J
+--- 核对的结论可能是“到此为止”：stop_reason 在 v1.5.0 里已修复，空 `tools` 是有意设计，edit 模糊匹配的方案已被 #10655 拒绝。记下结论，换一条线索。
+flowchart TD
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::done
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::done
+  X["记下结论，换一条线索"]:::on
+  C["最小复现<br/>调用真实函数"]:::dim
+  D["定位<br/>哪个函数、哪一行、为什么"]:::dim
+  E["红绿测试 + 最小补丁"]:::dim
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::dim
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::dim
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::dim
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::dim
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::dim
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
+  G -- "协作者" --> I
+  I --> J
+--- 仍存在，才往下走。**最小复现**用真实函数，不写“模拟 Pi”：长整数那条，`parseToolCallArguments` 把 `…575` 变成 `…550`，没有任何报错。
+flowchart TD
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::done
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::done
+  X["记下结论，换一条线索"]:::dim
+  C["最小复现<br/>调用真实函数"]:::on
+  D["定位<br/>哪个函数、哪一行、为什么"]:::dim
+  E["红绿测试 + 最小补丁"]:::dim
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::dim
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::dim
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::dim
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::dim
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::dim
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
+  G -- "协作者" --> I
+  I --> J
+--- **定位**到哪个函数、哪一行：`json-parse.ts:88` 的 `JSON.parse(json)` 没有第二个参数，舍入发生在这里；修复要发生在解析这一站，而不是 `coerce.ts` 的 `String(value)`。
+flowchart TD
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::done
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::done
+  X["记下结论，换一条线索"]:::dim
+  C["最小复现<br/>调用真实函数"]:::done
+  D["定位<br/>哪个函数、哪一行、为什么"]:::on
+  E["红绿测试 + 最小补丁"]:::dim
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::dim
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::dim
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::dim
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::dim
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::dim
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
+  G -- "协作者" --> I
+  I --> J
+--- **红绿测试加最小补丁**，再**选门禁**：补丁先在修复前失败、修复后通过；改了哪些路径决定走 `docs` 档还是 `full` 档，`third_party/` 下的测试不在任何门禁里。
+flowchart TD
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::done
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::done
+  X["记下结论，换一条线索"]:::dim
+  C["最小复现<br/>调用真实函数"]:::done
+  D["定位<br/>哪个函数、哪一行、为什么"]:::done
+  E["红绿测试 + 最小补丁"]:::on
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::on
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::dim
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::dim
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::dim
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::dim
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
+  G -- "协作者" --> I
+  I --> J
+--- **英文 Issue 草稿**：现象做标题，一屏放得下，复现用公开 API，“Not verified” 不留空。草稿只打印，本人审阅后才发。前半段到这里都不需要任何人的许可。
+flowchart TD
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::done
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::done
+  X["记下结论，换一条线索"]:::dim
+  C["最小复现<br/>调用真实函数"]:::done
+  D["定位<br/>哪个函数、哪一行、为什么"]:::done
+  E["红绿测试 + 最小补丁"]:::done
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::done
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::on
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::dim
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::dim
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::dim
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
+  G -- "协作者" --> I
+  I --> J
+--- 后半段取决于维护者：非协作者在 MiniMax 开 Issue 讨论，在 Pi 等 `lgtmi` / `lgtm`；协作者从 feature 分支提 PR，填模板、跑 `pnpm verify`，通过两个检查后合并。节奏不由你控制。
+flowchart TD
+  A["线索<br/>补丁台账 / 测试 / 用着用着的异常"]:::done
+  B["核对<br/>固定版本的上游代码里还在吗<br/>上游 Issue 里有人谈过吗"]:::done
+  X["记下结论，换一条线索"]:::dim
+  C["最小复现<br/>调用真实函数"]:::done
+  D["定位<br/>哪个函数、哪一行、为什么"]:::done
+  E["红绿测试 + 最小补丁"]:::done
+  F["选门禁<br/>docs 档还是 full 档<br/>测试登记在哪里"]:::done
+  G["英文 Issue 草稿<br/>你本人审阅后才发"]:::done
+  H["MiniMax：开 Issue 讨论<br/>Pi：新贡献者先被自动关闭，等 lgtmi / lgtm"]:::on
+  I["feature 分支 PR<br/>填模板，pnpm verify"]:::on
+  J["独立评审 + verification 与<br/>source-history-artifact 两个检查<br/>通过后合并"]:::on
+  A --> B
+  B -- "已修复 / 有意如此 / 已被拒绝" --> X
+  B -- "仍存在" --> C
+  C --> D
+  D --> E
+  E --> F
+  F --> G
+  G -- "非协作者" --> H
+  H -- "被邀请成为协作者 / 得到 lgtm" --> I
+  G -- "协作者" --> I
+  I --> J
+:::
 
 前半段（A 到 G）不需要任何人的许可，是这一章要练的；后半段取决于维护者的回应，节奏不由你控制。
 
@@ -100,15 +280,18 @@ MiniMax Code 的 TypeScript 有七十多万行（第 0 章的体检）。想“�
 
 台账说 MiniMax 在 Anthropic 流的迭代器末尾数 `stop_reason`，一个都没见到就抛错：
 
+::: tabs
+@@ MiniMax 内置 Pi 0.79.1
 @mm third_party/pi-mono/packages/ai/src/providers/anthropic.ts#L516-L529 hl=520,528
-
-MiniMax 的做法是“流结束时回头检查”：看到过 `message_start` 和 `message_stop`，却没有任何 `message_delta` 带非空的 `stop_reason`，就抛出带诊断计数的错误（诊断里只有计数和耗时，不含正文）。Pi v1.5.0 换了一个角度：
-
+流结束时回头检查：看到 `message_stop` 却没有非空的 `stop_reason` 就抛错。
+@@ Pi v1.5.0
 @pi packages/ai/src/api/anthropic-messages.ts#L596-L602 hl=601
-
 @pi packages/ai/src/api/anthropic-messages.ts#L838-L848 hl=841
-
 @pi packages/ai/src/api/anthropic-messages.ts#L893-L898 hl=896-897
+换了一个角度：初始 `stopReason` 是 `"pending"`，空字符串被跳过，流结束时仍是 `pending` 就抛错。
+:::
+
+MiniMax 的做法是“流结束时回头检查”：看到过 `message_start` 和 `message_stop`，却没有任何 `message_delta` 带非空的 `stop_reason`，就抛出带诊断计数的错误（诊断里只有计数和耗时，不含正文）。Pi v1.5.0 换了一个角度（上面的第二个标签）：
 
 - 第 601 行：输出消息的初始 `stopReason` 是 `"pending"`，不再是 `"stop"`。Pi 的 `ai` 包 CHANGELOG 在 0.83.0 的条目里写着新增了 `pending` 停止原因。
 - 第 841 行：只有 `stop_reason` 为真值时才改写；空字符串被跳过，`stopReason` 仍然是 `pending`。
@@ -139,9 +322,15 @@ Windows 的 taskkill 那条更直接：Pi 的 `killProcessTree` 现在从 `Syste
 
 edit 工具在精确匹配失败时会退回模糊匹配：把文件内容和 `oldText` 都规范化（NFKC、弯引号变直引号、各种破折号变连字符、行尾空白去掉），在规范化后的文本里找位置。MiniMax 的 2026-07-04 补丁说，早先的版本在这之后把**整个文件**都用规范化后的文本写回，一次模糊匹配会悄悄把全文件的弯引号、全角空格改掉。Pi v1.5.0 的相应代码：
 
+::: tabs
+@@ Pi v1.5.0
 @pi packages/coding-agent/src/core/tools/edit-diff.ts#L316-L319 hl=318
-
 @pi packages/coding-agent/src/core/tools/edit-diff.ts#L351-L356 hl=353-354
+在规范化后的整份文本上替换，再把被碰到的行扩出去，其他行从原文拷回。
+@@ MiniMax 内置 Pi
+@mm third_party/pi-mono/packages/coding-agent/src/core/tools/edit-diff.ts#fuzzyFindText
+规范化只用来定位，命中的位置映射回原文，替换只碰匹配到的片段；映射回去的片段重新规范化必须等于定位到的文字。
+:::
 
 第 318 行：只要有任何一处用了模糊匹配，替换就在整份规范化后的文本上做。但第 353-354 行不再把它整个写回，而是调用 `applyReplacementsPreservingUnchangedLines`：把每处替换扩到它碰到的**行**，被碰到的行从规范化文本里取，其他行从原文逐字节拷回。所以上游只修了一半：没被碰到的行保持原样，**被碰到的行里，`oldText` 之外的字符仍然被规范化**。
 
@@ -197,24 +386,88 @@ edit 工具在精确匹配失败时会退回模糊匹配：把文件内容和 `o
 
 复现只说明“有问题”。要写补丁，得知道问题在哪一站。参数文本的路径：
 
-```mermaid
+::: steps 参数文本一站一站走过，舍入发生在 JSON.parse
+--- 模型把身份证号写成不带引号的 JSON 数字：`440103198004279575`，超过 `Number.MAX_SAFE_INTEGER`。
 flowchart LR
-  A["模型的参数文本<br/>{&quot;id_number&quot;: 440103198004279575}"] --> B["anthropic-messages.ts<br/>工具调用结束，取出完整文本"]
-  B --> C["ToolCallArgumentsStream.finish()<br/>streaming-json.ts"]
-  C --> D["parseToolCallArguments<br/>json-parse.ts"]
-  D --> E["parseJsonWithRepair<br/>JSON.parse(json)  舍入发生在这里"]
-  E --> F["validateToolArguments<br/>validation.ts"]
-  F --> G["coercePrimitive<br/>String(舍入后的数字)"]
-  G --> H["工具收到的字符串"]
-```
+  A["模型的参数文本<br/>{#quot;id_number#quot;: 440103198004279575}"]:::on
+  B["anthropic-messages.ts<br/>工具调用结束，取出完整文本"]:::dim
+  C["ToolCallArgumentsStream.finish()<br/>streaming-json.ts"]:::dim
+  D["parseToolCallArguments<br/>json-parse.ts"]:::dim
+  E["parseJsonWithRepair<br/>JSON.parse(json)  舍入发生在这里"]:::dim
+  F["validateToolArguments<br/>validation.ts"]:::dim
+  G["coercePrimitive<br/>String(舍入后的数字)"]:::dim
+  H["工具收到的字符串"]:::dim
+  A --> B --> C --> D --> E --> F --> G --> H
+--- `anthropic-messages.ts` 在工具调用结束时取出完整的参数文本，交给 `ToolCallArgumentsStream.finish()`。这一站只传递文本，没有改动。
+flowchart LR
+  A["模型的参数文本<br/>{#quot;id_number#quot;: 440103198004279575}"]:::done
+  B["anthropic-messages.ts<br/>工具调用结束，取出完整文本"]:::on
+  C["ToolCallArgumentsStream.finish()<br/>streaming-json.ts"]:::on
+  D["parseToolCallArguments<br/>json-parse.ts"]:::dim
+  E["parseJsonWithRepair<br/>JSON.parse(json)  舍入发生在这里"]:::dim
+  F["validateToolArguments<br/>validation.ts"]:::dim
+  G["coercePrimitive<br/>String(舍入后的数字)"]:::dim
+  H["工具收到的字符串"]:::dim
+  A --> B --> C --> D --> E --> F --> G --> H
+--- `finish()` 调用 `parseToolCallArguments`（`json-parse.ts`），把文本交给 `parseJsonWithRepair`。
+flowchart LR
+  A["模型的参数文本<br/>{#quot;id_number#quot;: 440103198004279575}"]:::done
+  B["anthropic-messages.ts<br/>工具调用结束，取出完整文本"]:::done
+  C["ToolCallArgumentsStream.finish()<br/>streaming-json.ts"]:::done
+  D["parseToolCallArguments<br/>json-parse.ts"]:::on
+  E["parseJsonWithRepair<br/>JSON.parse(json)  舍入发生在这里"]:::dim
+  F["validateToolArguments<br/>validation.ts"]:::dim
+  G["coercePrimitive<br/>String(舍入后的数字)"]:::dim
+  H["工具收到的字符串"]:::dim
+  A --> B --> C --> D --> E --> F --> G --> H
+--- **舍入发生在这里**：`json-parse.ts:88` 的 `JSON.parse(json)` 没有第二个参数，数字字面量按 double 解析，超过 2^53 的整数此刻就丢了精度，后面再怎么处理都找不回来。
+flowchart LR
+  A["模型的参数文本<br/>{#quot;id_number#quot;: 440103198004279575}"]:::done
+  B["anthropic-messages.ts<br/>工具调用结束，取出完整文本"]:::done
+  C["ToolCallArgumentsStream.finish()<br/>streaming-json.ts"]:::done
+  D["parseToolCallArguments<br/>json-parse.ts"]:::done
+  E["parseJsonWithRepair<br/>JSON.parse(json)  舍入发生在这里"]:::on
+  F["validateToolArguments<br/>validation.ts"]:::dim
+  G["coercePrimitive<br/>String(舍入后的数字)"]:::dim
+  H["工具收到的字符串"]:::dim
+  A --> B --> C --> D --> E --> F --> G --> H
+--- `validateToolArguments` 按 schema 校验，参数类型是 `string`，值却是数字，于是进入 `coerce.ts:545` 的转换。
+flowchart LR
+  A["模型的参数文本<br/>{#quot;id_number#quot;: 440103198004279575}"]:::done
+  B["anthropic-messages.ts<br/>工具调用结束，取出完整文本"]:::done
+  C["ToolCallArgumentsStream.finish()<br/>streaming-json.ts"]:::done
+  D["parseToolCallArguments<br/>json-parse.ts"]:::done
+  E["parseJsonWithRepair<br/>JSON.parse(json)  舍入发生在这里"]:::done
+  F["validateToolArguments<br/>validation.ts"]:::on
+  G["coercePrimitive<br/>String(舍入后的数字)"]:::dim
+  H["工具收到的字符串"]:::dim
+  A --> B --> C --> D --> E --> F --> G --> H
+--- `String(value)` 把已经舍入的 double 忠实地字符串化：工具收到 `"440103198004279550"`，末位 75 变成 50，没有报错。这一步对 `42` 这样的值完全合理，**不是该改的地方**。
+flowchart LR
+  A["模型的参数文本<br/>{#quot;id_number#quot;: 440103198004279575}"]:::done
+  B["anthropic-messages.ts<br/>工具调用结束，取出完整文本"]:::done
+  C["ToolCallArgumentsStream.finish()<br/>streaming-json.ts"]:::done
+  D["parseToolCallArguments<br/>json-parse.ts"]:::done
+  E["parseJsonWithRepair<br/>JSON.parse(json)  舍入发生在这里"]:::done
+  F["validateToolArguments<br/>validation.ts"]:::done
+  G["coercePrimitive<br/>String(舍入后的数字)"]:::on
+  H["工具收到的字符串"]:::on
+  A --> B --> C --> D --> E --> F --> G --> H
+:::
 
 @lab node labs/ch11/flow.mjs trace
 
 行号是程序在 v1.5.0 的真实文件里搜出来的。最关键的两处：
 
+::: tabs
+@@ Pi v1.5.0
 @pi packages/ai/src/utils/json-parse.ts#L86-L96 hl=88
-
 @pi packages/schema/src/coerce.ts#L541-L546 hl=545
+`JSON.parse(json)` 没有第二个参数，舍入发生在这里；`coerce` 只是忠实地字符串化。
+@@ MiniMax 内置 Pi
+@mm third_party/pi-mono/packages/ai/src/utils/json-parse.ts#L89-L121
+内置的 Pi 已经带着 MiniMax 的补丁：`preserveUnsafeIntegerSource` 作为 reviver 传给 `JSON.parse`，遇到不安全的整数字面量就保留原文。
+:::
 
 - `json-parse.ts:88`：`JSON.parse(json)` 没有第二个参数。规范规定数字字面量按 double 解析，超过 2^53 的整数在这里就已经丢了精度，后面再怎么处理都找不回来。
 - `coerce.ts:545`：`type` 是 `string` 而值是数字时，转换规则是 `String(value)`。这一步对 `42` 这样的值完全合理（模型常把 `"42"` 和 `42` 混着发），所以**不能**去改这里；对一个已经舍入的 double，它只是忠实地把错误的数字字符串化。
@@ -301,7 +554,14 @@ flowchart LR
 
 `verificationPlan` 把门禁规则收成了一个函数，`classifyChanges` 由调用者传入（实验里传的是 MiniMax 自己的）：
 
+::: tabs
+@@ MiniMax
+@mm scripts/ci-changes.mjs#classifyChanges
+真实的改动分类：只有文档类路径算 `docs`，其他一律 `full`。
+@@ host
 @code host/src/contribution.mjs#verificationPlan hl=180-182
+把门禁规则收成一个函数，`classifyChanges` 由调用者传入。
+:::
 
 简化的地方：台账解析只认 `MINIMAX_CHANGES.md` 现有的“标题加字段列表”格式；`upstreamCheck` 记录的 Issue 状态是人在某一天读到的，程序不联网刷新；`verificationPlan` 没有实现 `perf:full` 的判断，那需要读懂改动是否涉及历史构造、会话存储、流式或工具执行循环，只能由作者判断。
 

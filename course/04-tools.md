@@ -113,6 +113,324 @@ flowchart TD
   E8 -.-> R
 ```
 
+::: steps 一次 edit 调用过六道关
+--- 每个 Turn 开始时，`newRuntimeTool` 已经把 `RuntimeTool { def, impl }` 翻成了 Pi 的 `AgentTool`。模型发来一个 `edit` 的 `toolCall`，Pi 的 `prepareToolCall` 先过第 ① 关：按名字找工具，找到了。找不到就是 `tool_not_found`。
+flowchart TD
+  D["RuntimeTool { def, impl }<br/>types.ts"]:::done
+  N["newRuntimeTool<br/>翻成 Pi 的 AgentTool"]:::done
+  L["Pi 收到 toolCall"]:::on
+  F{"① 找到工具？"}:::on
+  E1["tool_not_found"]:::dim
+  P["② prepareArguments<br/>模型的固定坏习惯"]:::dim
+  E2["argument_preparation"]:::dim
+  V["③ validateToolArguments<br/>修正 + 校验"]:::dim
+  E3["argument_validation"]:::dim
+  B["④ beforeToolCall 链<br/>PTC 子调用策略 · 权限门 · 插件 Hook"]:::dim
+  E4["before_hook"]:::dim
+  E5["blocked"]:::dim
+  E6["cancelled"]:::dim
+  X["⑤ tool.execute<br/>newRuntimeTool 的包装"]:::dim
+  E7["execution"]:::dim
+  A["⑥ afterToolCall 链<br/>错误归一 · 插件 Hook 改写"]:::dim
+  E8["after_hook"]:::dim
+  R["toolResult"]:::dim
+  D --> N
+  N --> L
+  L --> F
+  F -->|否| E1
+  F -->|是| P
+  P -->|抛出| E2
+  P --> V
+  V -->|不合法| E3
+  V --> B
+  B -->|抛出| E4
+  B -->|拦下| E5
+  B -->|已取消| E6
+  B --> X
+  X -->|抛出| E7
+  X --> A
+  E7 --> A
+  A -->|抛出| E8
+  A --> R
+  E1 -.-> R
+  E2 -.-> R
+  E3 -.-> R
+  E4 -.-> R
+  E5 -.-> R
+  E6 -.-> R
+  E8 -.-> R
+--- 第 ② 关 `prepareArguments`：留给单个工具，在通用校验之前修某些模型的固定坏习惯。`edit` 的 `prepareEditArguments` 就在这里。它抛出就是 `argument_preparation`。
+flowchart TD
+  D["RuntimeTool { def, impl }<br/>types.ts"]:::done
+  N["newRuntimeTool<br/>翻成 Pi 的 AgentTool"]:::done
+  L["Pi 收到 toolCall"]:::done
+  F{"① 找到工具？"}:::done
+  E1["tool_not_found"]:::dim
+  P["② prepareArguments<br/>模型的固定坏习惯"]:::on
+  E2["argument_preparation"]:::dim
+  V["③ validateToolArguments<br/>修正 + 校验"]:::dim
+  E3["argument_validation"]:::dim
+  B["④ beforeToolCall 链<br/>PTC 子调用策略 · 权限门 · 插件 Hook"]:::dim
+  E4["before_hook"]:::dim
+  E5["blocked"]:::dim
+  E6["cancelled"]:::dim
+  X["⑤ tool.execute<br/>newRuntimeTool 的包装"]:::dim
+  E7["execution"]:::dim
+  A["⑥ afterToolCall 链<br/>错误归一 · 插件 Hook 改写"]:::dim
+  E8["after_hook"]:::dim
+  R["toolResult"]:::dim
+  D --> N
+  N --> L
+  L --> F
+  F -->|否| E1
+  F -->|是| P
+  P -->|抛出| E2
+  P --> V
+  V -->|不合法| E3
+  V --> B
+  B -->|抛出| E4
+  B -->|拦下| E5
+  B -->|已取消| E6
+  B --> X
+  X -->|抛出| E7
+  X --> A
+  E7 --> A
+  A -->|抛出| E8
+  A --> R
+  E1 -.-> R
+  E2 -.-> R
+  E3 -.-> R
+  E4 -.-> R
+  E5 -.-> R
+  E6 -.-> R
+  E8 -.-> R
+--- 第 ③ 关 `validateToolArguments`：先把意图没有歧义的错误修好（`"20"` 变 `20`），再对照 schema 校验。不合法就是 `argument_validation`，错误信息写给下一轮模型看。**前三关都在任何 Hook 之前**，参数不合法的调用，Hook 和权限门永远看不到。
+flowchart TD
+  D["RuntimeTool { def, impl }<br/>types.ts"]:::done
+  N["newRuntimeTool<br/>翻成 Pi 的 AgentTool"]:::done
+  L["Pi 收到 toolCall"]:::done
+  F{"① 找到工具？"}:::done
+  E1["tool_not_found"]:::dim
+  P["② prepareArguments<br/>模型的固定坏习惯"]:::done
+  E2["argument_preparation"]:::dim
+  V["③ validateToolArguments<br/>修正 + 校验"]:::on
+  E3["argument_validation"]:::dim
+  B["④ beforeToolCall 链<br/>PTC 子调用策略 · 权限门 · 插件 Hook"]:::dim
+  E4["before_hook"]:::dim
+  E5["blocked"]:::dim
+  E6["cancelled"]:::dim
+  X["⑤ tool.execute<br/>newRuntimeTool 的包装"]:::dim
+  E7["execution"]:::dim
+  A["⑥ afterToolCall 链<br/>错误归一 · 插件 Hook 改写"]:::dim
+  E8["after_hook"]:::dim
+  R["toolResult"]:::dim
+  D --> N
+  N --> L
+  L --> F
+  F -->|否| E1
+  F -->|是| P
+  P -->|抛出| E2
+  P --> V
+  V -->|不合法| E3
+  V --> B
+  B -->|抛出| E4
+  B -->|拦下| E5
+  B -->|已取消| E6
+  B --> X
+  X -->|抛出| E7
+  X --> A
+  E7 --> A
+  A -->|抛出| E8
+  A --> R
+  E1 -.-> R
+  E2 -.-> R
+  E3 -.-> R
+  E4 -.-> R
+  E5 -.-> R
+  E6 -.-> R
+  E8 -.-> R
+--- 第 ④ 关 `beforeToolCall` 链：PTC 子调用策略、工具安全检查、插件 PreToolUse Hook、plan mode 和权限门，按顺序，**第一个 `block` 说了算**。抛出是 `before_hook`，拦下是 `blocked`，已取消是 `cancelled`。Hook 返回 `updatedInput` 时，MiniMax 还会对照权威 schema 再校验一次。
+flowchart TD
+  D["RuntimeTool { def, impl }<br/>types.ts"]:::done
+  N["newRuntimeTool<br/>翻成 Pi 的 AgentTool"]:::done
+  L["Pi 收到 toolCall"]:::done
+  F{"① 找到工具？"}:::done
+  E1["tool_not_found"]:::dim
+  P["② prepareArguments<br/>模型的固定坏习惯"]:::done
+  E2["argument_preparation"]:::dim
+  V["③ validateToolArguments<br/>修正 + 校验"]:::done
+  E3["argument_validation"]:::dim
+  B["④ beforeToolCall 链<br/>PTC 子调用策略 · 权限门 · 插件 Hook"]:::on
+  E4["before_hook"]:::dim
+  E5["blocked"]:::dim
+  E6["cancelled"]:::dim
+  X["⑤ tool.execute<br/>newRuntimeTool 的包装"]:::dim
+  E7["execution"]:::dim
+  A["⑥ afterToolCall 链<br/>错误归一 · 插件 Hook 改写"]:::dim
+  E8["after_hook"]:::dim
+  R["toolResult"]:::dim
+  D --> N
+  N --> L
+  L --> F
+  F -->|否| E1
+  F -->|是| P
+  P -->|抛出| E2
+  P --> V
+  V -->|不合法| E3
+  V --> B
+  B -->|抛出| E4
+  B -->|拦下| E5
+  B -->|已取消| E6
+  B --> X
+  X -->|抛出| E7
+  X --> A
+  E7 --> A
+  A -->|抛出| E8
+  A --> R
+  E1 -.-> R
+  E2 -.-> R
+  E3 -.-> R
+  E4 -.-> R
+  E5 -.-> R
+  E6 -.-> R
+  E8 -.-> R
+--- 第 ⑤ 关 `tool.execute`，也就是 `newRuntimeTool` 的包装：每次调用造一份新上下文 `callCtx = { ...ctx, toolCallId, assistantMessageId }`，observer 先看原始结果，再把 `content`、`details`、`terminate` 交给 Pi。抛出是 `execution`，但仍然会走第 ⑥ 关。
+flowchart TD
+  D["RuntimeTool { def, impl }<br/>types.ts"]:::done
+  N["newRuntimeTool<br/>翻成 Pi 的 AgentTool"]:::done
+  L["Pi 收到 toolCall"]:::done
+  F{"① 找到工具？"}:::done
+  E1["tool_not_found"]:::dim
+  P["② prepareArguments<br/>模型的固定坏习惯"]:::done
+  E2["argument_preparation"]:::dim
+  V["③ validateToolArguments<br/>修正 + 校验"]:::done
+  E3["argument_validation"]:::dim
+  B["④ beforeToolCall 链<br/>PTC 子调用策略 · 权限门 · 插件 Hook"]:::done
+  E4["before_hook"]:::dim
+  E5["blocked"]:::dim
+  E6["cancelled"]:::dim
+  X["⑤ tool.execute<br/>newRuntimeTool 的包装"]:::on
+  E7["execution"]:::dim
+  A["⑥ afterToolCall 链<br/>错误归一 · 插件 Hook 改写"]:::dim
+  E8["after_hook"]:::dim
+  R["toolResult"]:::dim
+  D --> N
+  N --> L
+  L --> F
+  F -->|否| E1
+  F -->|是| P
+  P -->|抛出| E2
+  P --> V
+  V -->|不合法| E3
+  V --> B
+  B -->|抛出| E4
+  B -->|拦下| E5
+  B -->|已取消| E6
+  B --> X
+  X -->|抛出| E7
+  X --> A
+  E7 --> A
+  A -->|抛出| E8
+  A --> R
+  E1 -.-> R
+  E2 -.-> R
+  E3 -.-> R
+  E4 -.-> R
+  E5 -.-> R
+  E6 -.-> R
+  E8 -.-> R
+--- 第 ⑥ 关 `afterToolCall` 链：`toolResultErrorPatch` 先把“工具自己报错”归一成 `isError: true`，之后每个 Hook 逐个改写，后一个看到前一个改写后的结果。Hook 自己抛出是 `after_hook`。
+flowchart TD
+  D["RuntimeTool { def, impl }<br/>types.ts"]:::done
+  N["newRuntimeTool<br/>翻成 Pi 的 AgentTool"]:::done
+  L["Pi 收到 toolCall"]:::done
+  F{"① 找到工具？"}:::done
+  E1["tool_not_found"]:::dim
+  P["② prepareArguments<br/>模型的固定坏习惯"]:::done
+  E2["argument_preparation"]:::dim
+  V["③ validateToolArguments<br/>修正 + 校验"]:::done
+  E3["argument_validation"]:::dim
+  B["④ beforeToolCall 链<br/>PTC 子调用策略 · 权限门 · 插件 Hook"]:::done
+  E4["before_hook"]:::dim
+  E5["blocked"]:::dim
+  E6["cancelled"]:::dim
+  X["⑤ tool.execute<br/>newRuntimeTool 的包装"]:::done
+  E7["execution"]:::dim
+  A["⑥ afterToolCall 链<br/>错误归一 · 插件 Hook 改写"]:::on
+  E8["after_hook"]:::dim
+  R["toolResult"]:::dim
+  D --> N
+  N --> L
+  L --> F
+  F -->|否| E1
+  F -->|是| P
+  P -->|抛出| E2
+  P --> V
+  V -->|不合法| E3
+  V --> B
+  B -->|抛出| E4
+  B -->|拦下| E5
+  B -->|已取消| E6
+  B --> X
+  X -->|抛出| E7
+  X --> A
+  E7 --> A
+  A -->|抛出| E8
+  A --> R
+  E1 -.-> R
+  E2 -.-> R
+  E3 -.-> R
+  E4 -.-> R
+  E5 -.-> R
+  E6 -.-> R
+  E8 -.-> R
+--- 六道关都过了，交回一条 `toolResult`。任何一关的失败（虚线）也都变成一条 `isError` 的 `toolResult` 回到模型，而不是让异常冲出循环。
+flowchart TD
+  D["RuntimeTool { def, impl }<br/>types.ts"]:::done
+  N["newRuntimeTool<br/>翻成 Pi 的 AgentTool"]:::done
+  L["Pi 收到 toolCall"]:::done
+  F{"① 找到工具？"}:::done
+  E1["tool_not_found"]:::dim
+  P["② prepareArguments<br/>模型的固定坏习惯"]:::done
+  E2["argument_preparation"]:::dim
+  V["③ validateToolArguments<br/>修正 + 校验"]:::done
+  E3["argument_validation"]:::dim
+  B["④ beforeToolCall 链<br/>PTC 子调用策略 · 权限门 · 插件 Hook"]:::done
+  E4["before_hook"]:::dim
+  E5["blocked"]:::dim
+  E6["cancelled"]:::dim
+  X["⑤ tool.execute<br/>newRuntimeTool 的包装"]:::done
+  E7["execution"]:::dim
+  A["⑥ afterToolCall 链<br/>错误归一 · 插件 Hook 改写"]:::done
+  E8["after_hook"]:::dim
+  R["toolResult"]:::on
+  D --> N
+  N --> L
+  L --> F
+  F -->|否| E1
+  F -->|是| P
+  P -->|抛出| E2
+  P --> V
+  V -->|不合法| E3
+  V --> B
+  B -->|抛出| E4
+  B -->|拦下| E5
+  B -->|已取消| E6
+  B --> X
+  X -->|抛出| E7
+  X --> A
+  E7 --> A
+  A -->|抛出| E8
+  A --> R
+  E1 -.-> R
+  E2 -.-> R
+  E3 -.-> R
+  E4 -.-> R
+  E5 -.-> R
+  E6 -.-> R
+  E8 -.-> R
+:::
+
 虚线是失败出口：每个出口都变成一条 `isError` 的 `toolResult` 回到模型，而不是让异常冲出循环。前三关在 Pi 的 `prepareToolCall` 里：
 
 @mm third_party/pi-mono/packages/agent/src/agent-loop.ts#L751-L801 hl=759-770,775,790,796-799
@@ -176,7 +494,17 @@ Pi 在 `beforeToolCall` 之后不会再校验参数——`prepareToolCall` 的 L
 
 Claude Code 不一样：只把**相邻的**并发安全调用并成一批，写操作自己一批，像一道栅栏（Claude Code 课程第 3 章读过 `partitionToolCalls`）。`run_code` 又不一样：程序可以随时发出子调用，没有“一批”的概念，MiniMax 为此写了一条队列：
 
+::: tabs
+@@ MiniMax
 @mm packages/local-runtime-v2/src/service/turn-system/agent-host/execution/ptc/subcall-scheduler.ts#L82-L98 hl=83,90-95
+屏障队列：串行调用等前面的全部结束，并挡住后面所有调用。
+@@ Pi
+@mm third_party/pi-mono/packages/agent/src/agent-loop.ts#L424-L440 hl=433-438
+整批规则：有一个 `sequential` 整批串行，否则整批并行。
+@@ host
+@code host/src/tools.mjs#SubcallScheduler
+`pump` 的写法和 MiniMax 一致：独占调用既是独占者，也是栅栏。
+:::
 
 `pump` 在每次有调用进来、有调用结束时被叫醒。队头是串行调用，必须等正在跑的全部结束才开始；开始之后队列里的所有调用（哪怕是并行的）都得等它；队头是并行调用，只要没到并发上限就开始。类上面的注释说得清楚：“一个等待中的串行调用会挡住后面的并行调用，写操作因此独占，而读的洪流也不会把写饿死。”
 
@@ -283,6 +611,116 @@ sequenceDiagram
   R-->>P: toolResult：只有返回值
   P-->>M: 继续对话
 ```
+
+一步一步看这条路：
+
+::: steps run_code 里的一次 tools.read
+--- 模型写好程序，发来一个 `run_code` 调用。Pi 把它当成普通工具调用，自己也过六道关，之后才执行 `run_code.execute`。
+sequenceDiagram
+  participant M as 模型
+  participant P as Pi 循环
+  participant R as run_code.execute
+  participant G as 访客程序<br/>QuickJS 在 Worker 里
+  participant S as 调度队列<br/>PtcSubcallScheduler
+  participant E as ptcExecutor.execute
+  participant L as executeToolCall<br/>同一条流水线
+  rect rgb(255, 237, 224)
+  M->>P: toolCall run_code { code }
+  P->>R: 六道关之后 execute
+  end
+--- `run_code` 把程序交给 QuickJS（在 Worker 线程里）。程序里每次 `tools.read(...)` 都经过桥，桥上只传 JSON 字符串。
+sequenceDiagram
+  participant M as 模型
+  participant P as Pi 循环
+  participant R as run_code.execute
+  participant G as 访客程序<br/>QuickJS 在 Worker 里
+  participant S as 调度队列<br/>PtcSubcallScheduler
+  participant E as ptcExecutor.execute
+  participant L as executeToolCall<br/>同一条流水线
+  M->>P: toolCall run_code { code }
+  P->>R: 六道关之后 execute
+  rect rgb(255, 237, 224)
+  R->>G: executePtcQuickJs(code)
+  G->>S: tools.read(args) · 桥上只传 JSON 字符串
+  end
+--- 调度队列给这次子调用**编号**并排队（`PtcSubcallScheduler`），轮到它时调用 `ptcExecutor.execute`，带上可信的 `parentToolCallId`。
+sequenceDiagram
+  participant M as 模型
+  participant P as Pi 循环
+  participant R as run_code.execute
+  participant G as 访客程序<br/>QuickJS 在 Worker 里
+  participant S as 调度队列<br/>PtcSubcallScheduler
+  participant E as ptcExecutor.execute
+  participant L as executeToolCall<br/>同一条流水线
+  M->>P: toolCall run_code { code }
+  P->>R: 六道关之后 execute
+  R->>G: executePtcQuickJs(code)
+  G->>S: tools.read(args) · 桥上只传 JSON 字符串
+  rect rgb(255, 237, 224)
+  S->>E: 编号、排队，execute({ parentToolCallId, toolName, args })
+  end
+--- `ptcExecutor.execute` 构造的 `childContext` 里只有这一个工具，访客程序没法借子调用去调第二个工具。然后进 Pi 的 `executeToolCall`：走的是**同一条流水线**，用的是 Agent 自己装好的 Hook，权限门一个不少。
+sequenceDiagram
+  participant M as 模型
+  participant P as Pi 循环
+  participant R as run_code.execute
+  participant G as 访客程序<br/>QuickJS 在 Worker 里
+  participant S as 调度队列<br/>PtcSubcallScheduler
+  participant E as ptcExecutor.execute
+  participant L as executeToolCall<br/>同一条流水线
+  M->>P: toolCall run_code { code }
+  P->>R: 六道关之后 execute
+  R->>G: executePtcQuickJs(code)
+  G->>S: tools.read(args) · 桥上只传 JSON 字符串
+  S->>E: 编号、排队，execute({ parentToolCallId, toolName, args })
+  rect rgb(255, 237, 224)
+  E->>L: childContext 里只有这一个工具
+  L->>L: prepare → validate → beforeToolCall → execute → afterToolCall
+  end
+--- 结果回来：`programmatic` 只在没被 Hook 改写时保留，执行器把 `{ status, output, data, truncation }` 交给访客程序。
+sequenceDiagram
+  participant M as 模型
+  participant P as Pi 循环
+  participant R as run_code.execute
+  participant G as 访客程序<br/>QuickJS 在 Worker 里
+  participant S as 调度队列<br/>PtcSubcallScheduler
+  participant E as ptcExecutor.execute
+  participant L as executeToolCall<br/>同一条流水线
+  M->>P: toolCall run_code { code }
+  P->>R: 六道关之后 execute
+  R->>G: executePtcQuickJs(code)
+  G->>S: tools.read(args) · 桥上只传 JSON 字符串
+  S->>E: 编号、排队，execute({ parentToolCallId, toolName, args })
+  E->>L: childContext 里只有这一个工具
+  L->>L: prepare → validate → beforeToolCall → execute → afterToolCall
+  rect rgb(255, 237, 224)
+  L-->>E: 结果 · programmatic 只在没被 Hook 改写时保留
+  E-->>G: { status, output, data, truncation }
+  end
+--- 程序 `return` 的值（上限 64 KiB）成为 `run_code` 的结果，只有它回到模型的上下文，三十次 `read` 的内容都留在程序的变量里。
+sequenceDiagram
+  participant M as 模型
+  participant P as Pi 循环
+  participant R as run_code.execute
+  participant G as 访客程序<br/>QuickJS 在 Worker 里
+  participant S as 调度队列<br/>PtcSubcallScheduler
+  participant E as ptcExecutor.execute
+  participant L as executeToolCall<br/>同一条流水线
+  M->>P: toolCall run_code { code }
+  P->>R: 六道关之后 execute
+  R->>G: executePtcQuickJs(code)
+  G->>S: tools.read(args) · 桥上只传 JSON 字符串
+  S->>E: 编号、排队，execute({ parentToolCallId, toolName, args })
+  E->>L: childContext 里只有这一个工具
+  L->>L: prepare → validate → beforeToolCall → execute → afterToolCall
+  L-->>E: 结果 · programmatic 只在没被 Hook 改写时保留
+  E-->>G: { status, output, data, truncation }
+  rect rgb(255, 237, 224)
+  G-->>R: return 的值 · 上限 64 KiB
+  R-->>P: toolResult · 只有返回值
+  P-->>M: 继续对话
+  end
+:::
 
 关键一站是 `ptcExecutor.execute`：
 
@@ -397,9 +835,16 @@ host 的 `tools.mjs` 分六块，自上而下就是一次调用的一生。第�
 
 简化的地方：参数 schema 是 JSON Schema 的小子集；`run_code` 用 `node:vm` 跑访客代码，而 `node:vm` 不是安全边界，它只用来演示“桥上只传 JSON 字符串”这条通路；`node:vm` 也管不住 `await` 之后的同步死循环，所以没有 `maxComputeMs`，QuickJS 的中断处理器才能打断；没有 Tool Search 的长尾工具、媒体结果、后台 Bash、批次共享的 wall clock 和审批暂停。
 
-host 的 `read` 复刻了“同一个工具，两种读者”：
+host 的 `read` 复刻了“同一个工具，两种读者”，和 MiniMax 的 `LocalReadTool` 对照着看：
 
+::: tabs
+@@ MiniMax
+@mm packages/agent-tools/src/desktop/local-pi-tools.ts#L250-L262 hl=253
+手里有两个 `read`，`isPtcChildCall(ctx)` 为真并且文件没超过 8 MiB，就用不限行数的那个。
+@@ host
 @code host/src/tools.mjs#readFile hl=476-477
+同一条判断：run_code 子调用整个窗口交给程序，模型直接调用超过上限就分页。
+:::
 
 ## 实验
 

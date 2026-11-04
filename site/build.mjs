@@ -5,6 +5,7 @@ import MarkdownIt from 'markdown-it';
 import { createHighlighter } from 'shiki';
 import { ROOT, LOCK, verifySource, readSource, sourceUrl } from '../lab/source.mjs';
 import { courseMap } from '../scripts/course-map.mjs';
+import { numberChapter, bookSidebar, bookToc, parseSteps, renderSteps, renderTabs } from './book.mjs';
 import { sourceNotes } from '../scripts/source-notes.mjs';
 import { buildCourseRuntime } from '../scripts/course-runtime.mjs';
 import { runLab } from '../labs/run.mjs';
@@ -86,6 +87,9 @@ function renderExcerpt(kind, args, chapter) {
     const [a, b] = part.split('-').map(Number);
     for (let i = a; i <= (b ?? a); i++) hl.add(i);
   }
+  // 高亮行必须落在摘录范围里：代码改动后行号漂移，这里会第一时间报出来
+  const outside = [...hl].filter(l => l < ex.start || l > ex.end);
+  if (outside.length) errors.push(`${chapter.slug}: ${ex.file} 的高亮行 ${outside.join(',')} 不在摘录范围 ${ex.start}–${ex.end} 里`);
   const lines = ex.end - ex.start + 1;
   const url = kind === 'mm' ? sourceUrl(ex.file, ex.start, ex.end)
     : kind === 'pi' ? `${PI.repo}/blob/${PI.commit}/${ex.file}#L${ex.start}-L${ex.end}`
@@ -177,6 +181,14 @@ for (const chapter of chapters.filter(c => !ONLY || c.slug === ONLY)) {
 }
 for (const name of declaredLabs) labs.set(name, await runLab(name));
 
+// 分步动画图：@steps 命令输出 { title, frames: [{ note, mermaid }] }
+function renderStepsCommand(command, where) {
+  const json = runCommand(command.trim(), where, false);
+  if (!json) return '';
+  try { const data = JSON.parse(json); return renderSteps(data.title ?? '', data.frames); }
+  catch { errors.push(`${where}: ${command} 的输出不是分步图 JSON`); return ''; }
+}
+
 /** 指令预处理：在交给 Markdown 之前，把新指令和 ::: 容器替换成 HTML。 */
 function preprocess(source, chapter) {
   const lines = source.split('\n');
@@ -195,11 +207,11 @@ function preprocess(source, chapter) {
       out.push('', block.join('\n'), '');
       continue;
     }
-    const directive = line.match(/^@(mm|pi|mox|code|trace|figure|lab)\s+(.+)$/);
+    const directive = line.match(/^@(mm|pi|mox|code|trace|steps|figure|lab)\s+(.+)$/);
     // `@lab 名字` 是 labs/run.mjs 里的源码实验（下面单独处理）；`@lab 命令` 在构建时运行命令
     if (directive && !(directive[1] === 'lab' && /^[a-z-]+\s*$/.test(directive[2]))) {
       const [, kind, args] = directive;
-      const html = kind === 'trace' ? renderTrace(args, chapter.slug) : kind === 'figure' ? renderFigure(args, chapter.slug) : kind === 'lab' ? renderCommandLab(args, chapter.slug) : renderExcerpt(kind, args, chapter);
+      const html = kind === 'trace' ? renderTrace(args, chapter.slug) : kind === 'steps' ? renderStepsCommand(args, chapter.slug) : kind === 'figure' ? renderFigure(args, chapter.slug) : kind === 'lab' ? renderCommandLab(args, chapter.slug) : renderExcerpt(kind, args, chapter);
       out.push('', html.replace(/\n\s*\n/g, '\n'), '');
       continue;
     }
@@ -213,7 +225,11 @@ function preprocess(source, chapter) {
       i = j;
       const inner = text => md.render(preprocess(text, chapter));
       let html;
-      if (type === 'predict') {
+      if (type === 'steps') {
+        html = renderSteps(title, parseSteps(body.join('\n')));
+      } else if (type === 'tabs') {
+        html = renderTabs(body, text => inner(text));
+      } else if (type === 'predict') {
         const split = body.findIndex(l => /^\?\?\?\s*$/.test(l));
         const question = inner(body.slice(0, split < 0 ? body.length : split).join('\n'));
         const answer = split < 0 ? '' : inner(body.slice(split + 1).join('\n'));
@@ -235,12 +251,16 @@ function preprocess(source, chapter) {
 
 function render(body, chapter) {
   const headings = [];
+  const seenIds = new Map();
   const renderer = new MarkdownIt({ html: true, linkify: true, highlight: (code, lang) => highlight(code, lang) });
   renderer.renderer.rules.heading_open = (tokens, i, options, env, self) => {
-    const title = tokens[i + 1].content;
-    const id = `section-${headings.length + 1}`;
+    const title = tokens[i + 1].content.replace(/`/g, '');
+    const base = title.toLowerCase().replace(/<[^>]+>/g, '').replace(/[`*_~“”"'：:，,。.？?！!（）()、/\\[\]{}|<>@#$%^&+=]/g, '').trim().replace(/\s+/g, '-') || 'section';
+    const dup = seenIds.get(base) ?? 0;
+    seenIds.set(base, dup + 1);
+    const id = dup ? `${base}-${dup}` : base;
     tokens[i].attrSet('id', id);
-    headings.push({ title: title.replace(/`/g, ''), id, level: Number(tokens[i].tag.slice(1)) });
+    if (['h2', 'h3'].includes(tokens[i].tag)) headings.push({ text: title, id, level: Number(tokens[i].tag.slice(1)) });
     return self.renderToken(tokens, i, options);
   };
   renderer.renderer.rules.table_open = () => '<div class="table-wrap"><table>';
@@ -301,12 +321,13 @@ function render(body, chapter) {
 }
 
 const parts = [...new Set(chapters.map(c => c.part))];
+let SECTIONS = new Map();
 function shell(title, content, { chapter, headings = [], home = false } = {}) {
   const base = chapter ? '../' : '';
-  const nav = parts.map(part => `<div class="nav-part"><div class="nav-part-title">${esc(part)}</div><ol>${chapters.filter(c => c.part === part).map(c => `<li class="${chapter?.slug === c.slug ? 'current' : ''}"><a href="${base}chapters/${c.slug}.html"${chapter?.slug === c.slug ? ' aria-current="page"' : ''}><span class="nav-num">${String(c.n).padStart(2, '0')}</span><span>${esc(c.title.split('：')[0])}</span></a></li>`).join('')}</ol></div>`).join('');
-  const toc = headings.length ? `<aside class="toc"><div class="toc-inner"><div class="toc-title">本页内容</div><ol>${headings.map(h => `<li class="lvl-${h.level}"><a href="#${h.id}">${esc(h.title)}</a></li>`).join('')}</ol></div></aside>` : '';
+  const nav = bookSidebar({ parts: parts.map(part => ({ title: part, chapters: chapters.filter(c => c.part === part) })), sections: SECTIONS, current: chapter?.slug, href: (slug, id) => `${base}chapters/${slug}.html${id ? '#' + id : ''}` }).replace(/^<nav class="sidebar" aria-label="课程目录"><div class="sidebar-inner">|<\/div><\/nav>$/g, '');
+  const toc = bookToc(headings);
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)} · Learn MiniMax Code</title><meta name="description" content="读懂 MiniMax Code：把 Pi 内核做成产品的那一圈代码，沿源码逐段拆解，并准备第一次开源贡献"><link rel="icon" href="${base}static/product-icon.png"><link rel="stylesheet" href="${base}static/style.css"><script>try{document.documentElement.dataset.theme=localStorage.getItem('theme')||(matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')}catch{}</script></head><body>
-<header class="topbar"><button class="icon-btn nav-toggle" aria-label="打开课程目录">☰</button><a class="brand" href="${base}index.html"><img class="product-icon" src="${base}static/product-icon.png" width="30" height="30" alt="MiniMax Code 原始图标"><span class="brand-name">Learn MiniMax Code</span></a><div class="topbar-actions"><button class="search-btn" data-search-open>搜索课程 <kbd>⌘K</kbd></button><a class="top-link" href="${base}workshop.html">实现主线</a><a class="top-link" href="${base}contribution.html">首次贡献</a><a class="top-link" href="${base}interview.html">面试题</a><a class="top-link" href="${base}sources.html">源码索引</a><a class="top-link" href="${base}map.html">源码导图</a><button class="icon-btn theme-toggle" aria-label="切换深浅主题">◐</button></div></header>
+<header class="topbar"><button class="icon-btn nav-toggle" aria-label="打开课程目录">☰</button><a class="brand" href="${base}index.html"><img class="product-icon" src="${base}static/product-icon.png" width="30" height="30" alt="MiniMax Code 原始图标"><span class="brand-name">Learn MiniMax Code</span></a><span class="topbar-title" aria-hidden="true"></span><div class="topbar-actions"><button class="search-btn" data-search-open>搜索课程 <kbd>⌘K</kbd></button><a class="top-link" href="${base}workshop.html">实现主线</a><a class="top-link" href="${base}contribution.html">首次贡献</a><a class="top-link" href="${base}interview.html">面试题</a><a class="top-link" href="${base}sources.html">源码索引</a><a class="top-link" href="${base}map.html">源码导图</a><button class="icon-btn theme-toggle" aria-label="切换深浅主题">◐</button></div></header>
 <div class="shell${toc ? ' has-toc' : ''}"><nav class="sidebar" aria-label="课程目录"><div class="sidebar-inner">${nav}<p class="nav-pin">MiniMax Code ${LOCK.version}<br><a href="${LOCK.repo}/tree/${LOCK.commit}">${LOCK.commit.slice(0, 7)} · MIT</a><br>基准：${LOCK.observedDate}</p></div></nav><main id="main">${content}</main>${toc}</div>
 <div class="search-dialog" hidden role="dialog" aria-modal="true" aria-label="搜索课程"><div class="search-panel"><input type="search" aria-label="搜索" placeholder="搜索机制、章节或源码……"><ol class="search-results"></ol><p class="search-hint">↑ ↓ 选择 · Enter 打开 · Esc 关闭</p></div></div><div class="scrim" hidden></div><script defer src="${base}static/mermaid.min.js"></script><script type="module" src="${base}static/app.js"></script></body></html>`;
 }
@@ -326,17 +347,23 @@ function sectionIndex(html, url, chapter, title) {
   return rows;
 }
 
+const rendered = [];
 for (const chapter of chapters.filter(c => !ONLY || c.slug === ONLY)) {
   const { data: fm, body } = parseFrontmatter(readFileSync(resolve(ROOT, `course/${chapter.slug}.md`), 'utf8'));
   if ((body.match(/^@(mm|source) /gm) ?? []).length < 2) errors.push(`${chapter.slug}: 每章至少需要两处 MiniMax 源码摘录（@mm）`);
-  const { html, headings } = render(body, chapter);
+  const out = render(body, chapter);
+  const { html, headings } = numberChapter(out.html, chapter.n, out.headings);
+  rendered.push({ chapter, fm, html, headings });
+}
+SECTIONS = new Map(rendered.map(r => [r.chapter.slug, r.headings]));
+for (const { chapter, fm, html, headings } of rendered) {
   const prev = chapters[chapter.n - 1];
   const next = chapters[chapter.n + 1];
   const learn = Array.isArray(fm.learn) && fm.learn.length ? fm.learn : chapter.learn;
   const build = fm.build || chapter.build;
   const objectives = `<div class="objectives"><p class="objectives-title">本章目标</p><ul>${learn.map(goal => `<li>${esc(goal)}</li>`).join('')}</ul><p class="objectives-build"><span>动手产出</span>${esc(build)}</p></div>`;
   const meta = [`约 ${esc(String(fm.time || chapter.time).replace(/^约\s*/, ''))}`, fm.prereq ? `前置：${esc(fm.prereq)}` : ''].filter(Boolean).map(x => `<span>${x}</span>`).join('');
-  const article = `<article class="chapter"><header class="chapter-head"><p class="eyebrow">第 ${String(chapter.n).padStart(2, '0')} 章<span>·</span>${esc(chapter.part)}</p><h1>${esc(chapter.title)}</h1><p class="lede">${esc(chapter.summary)}</p>${fm.motto ? `<p class="motto">${esc(fm.motto)}</p>` : ''}${objectives}<p class="chapter-meta">${meta}</p></header><div class="prose">${html}</div><nav class="pager">${prev ? `<a class="prev" href="${prev.slug}.html"><small>← 上一章</small><span>${esc(prev.title)}</span></a>` : '<span></span>'}${next ? `<a class="next" href="${next.slug}.html"><small>下一章 →</small><span>${esc(next.title)}</span></a>` : '<span></span>'}</nav></article>`;
+  const article = `<article class="chapter"><header class="chapter-head"><p class="eyebrow">第 ${String(chapter.n).padStart(2, '0')} 章<span>·</span>${esc(chapter.part)}</p><a class="edit-page" href="${REPO}/blob/main/course/${chapter.slug}.md" target="_blank" rel="noopener" title="在 GitHub 上查看本章源文件" aria-label="在 GitHub 上查看本章源文件"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></a><h1><span class="h1-num">${chapter.n}</span>${esc(chapter.title)}</h1><p class="lede">${esc(chapter.summary)}</p>${fm.motto ? `<p class="motto">${esc(fm.motto)}</p>` : ''}${objectives}<p class="chapter-meta">${meta}</p></header><div class="prose">${html}</div><nav class="pager">${prev ? `<a class="prev" href="${prev.slug}.html"><small>← 上一章</small><span>${esc(prev.title)}</span></a>` : '<span></span>'}${next ? `<a class="next" href="${next.slug}.html"><small>下一章 →</small><span>${esc(next.title)}</span></a>` : '<span></span>'}</nav></article>`;
   pages.set(`chapters/${chapter.slug}.html`, shell(chapter.title, article, { chapter, headings }));
   search.push(...sectionIndex(html, `chapters/${chapter.slug}.html`, String(chapter.n).padStart(2, '0'), chapter.title));
 }

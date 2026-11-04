@@ -114,7 +114,87 @@ stateDiagram-v2
 
 注册表只管账。Turn 怎样借到“当前代”，更新怎样把新一代放上去，由 `AgentHostTurnCapabilityLifecycle` 编排。它的类注释把目标说得很清楚：给每个被接纳的执行租一份能力快照，同时允许新的一代原子地发布给之后接纳的 Turn。三个角色的时序如下：Turn A 在更新前开始，Turn B 在候选还在发现时开始，Turn C 在发布门关着时开始。
 
-```mermaid
+::: steps 三个 Turn 与一次更新：租约怎样把旧的一代留到最后
+--- Turn A 在更新之前开始。`acquire` 把当前代 r1 抓到手，注册表 `retain` 一次，r1 的租约是 1。
+sequenceDiagram
+  participant A as Turn A
+  participant B as Turn B
+  participant C as Turn C
+  participant L as 生命周期<br/>acquire 与 tryPublish
+  participant U as 更新<br/>PluginSystem
+  participant G as 注册表
+  A->>L: acquire
+  L->>G: retain r1，租约 1
+--- 更新在旁边为候选 r2 做发现（连接服务器、`tools/list`），**不占发布门**。此时 Turn B 到达，`acquire` 照常拿到 r1，租约变成 2。
+sequenceDiagram
+  participant A as Turn A
+  participant B as Turn B
+  participant C as Turn C
+  participant L as 生命周期<br/>acquire 与 tryPublish
+  participant U as 更新<br/>PluginSystem
+  participant G as 注册表
+  A->>L: acquire
+  L->>G: retain r1，租约 1
+  U->>U: 候选 r2 在旁边发现，连接和 tools/list
+  B->>L: acquire，发现仍在进行
+  L->>G: retain r1，租约 2
+--- 候选备好了，更新调用 `tryPublish` 进入 commit 加切换，发布门关上。Turn C 此时到达，`waitForPublication` 让它在门口等。
+sequenceDiagram
+  participant A as Turn A
+  participant B as Turn B
+  participant C as Turn C
+  participant L as 生命周期<br/>acquire 与 tryPublish
+  participant U as 更新<br/>PluginSystem
+  participant G as 注册表
+  A->>L: acquire
+  L->>G: retain r1，租约 1
+  U->>U: 候选 r2 在旁边发现，连接和 tools/list
+  B->>L: acquire，发现仍在进行
+  L->>G: retain r1，租约 2
+  U->>L: tryPublish，commit 加切换
+  Note over L: 发布门关上
+  C->>L: acquire，在门口等待
+--- 切换在一段同步代码里完成：`registry.replace` 让 r2 成为当前代，r1 退休（`retired`）但租约还是 2，所以不拆。门打开，C 的 `retain` 拿到的是 r2。
+sequenceDiagram
+  participant A as Turn A
+  participant B as Turn B
+  participant C as Turn C
+  participant L as 生命周期<br/>acquire 与 tryPublish
+  participant U as 更新<br/>PluginSystem
+  participant G as 注册表
+  A->>L: acquire
+  L->>G: retain r1，租约 1
+  U->>U: 候选 r2 在旁边发现，连接和 tools/list
+  B->>L: acquire，发现仍在进行
+  L->>G: retain r1，租约 2
+  U->>L: tryPublish，commit 加切换
+  Note over L: 发布门关上
+  C->>L: acquire，在门口等待
+  U->>G: replace r2，r1 退休
+  Note over L: 发布门打开
+  L->>G: retain r2，给 C
+--- A 和 B 先后结束，`finally` 里各 `release` 一次，r1 的租约降到 0。
+sequenceDiagram
+  participant A as Turn A
+  participant B as Turn B
+  participant C as Turn C
+  participant L as 生命周期<br/>acquire 与 tryPublish
+  participant U as 更新<br/>PluginSystem
+  participant G as 注册表
+  A->>L: acquire
+  L->>G: retain r1，租约 1
+  U->>U: 候选 r2 在旁边发现，连接和 tools/list
+  B->>L: acquire，发现仍在进行
+  L->>G: retain r1，租约 2
+  U->>L: tryPublish，commit 加切换
+  Note over L: 发布门关上
+  C->>L: acquire，在门口等待
+  U->>G: replace r2，r1 退休
+  Note over L: 发布门打开
+  L->>G: retain r2，给 C
+  A->>L: release，r1 租约 1
+  B->>L: release，r1 租约 0
+--- 租约归零触发 `tryCleanup`：r1 已退休、租约为零、清理未开始，三个条件齐了，按顺序先 `close` 运行时，再跑 finalizer，最后从表里删掉。
 sequenceDiagram
   participant A as Turn A
   participant B as Turn B
@@ -136,7 +216,7 @@ sequenceDiagram
   A->>L: release，r1 租约 1
   B->>L: release，r1 租约 0
   G->>G: r1 退休且无租约，close，finalizer，删除
-```
+:::
 
 先读 Turn 一侧：
 
@@ -234,6 +314,81 @@ sequenceDiagram
 
 `cached-only` 且有失败的服务器，`next` 就是 `'immediate'`：发布成功之后，`PluginMcpDiscoveryScheduler` 立刻在后台用 `discover` 模式再准备一个候选，**发布成第二代**，这一代带着工具。发现失败则按退避重试，间隔默认 10 秒、30 秒、60 秒、120 秒、300 秒（`DEFAULT_MCP_DISCOVERY_DELAYS_MS`）。落到使用者身上：**在两代之间开始的 Turn 有这个插件的 Skill，没有它的 MCP 工具，下一个 Turn 才有**。MiniMax 用“第一个 Turn 缺工具”换来了“入场不被一个慢的 MCP 服务器拖住”。
 
+::: steps 一次本地改动的两段发布：先让 Skill 上线，再补上 MCP 工具
+--- 目录里的插件被改了，监视器去抖 150ms 后触发重建。这一次重建用 `cached-only` 模式，**不碰网络**。
+flowchart LR
+  W["目录变化<br/>去抖 150ms 后重建"]:::on
+  C1["候选一<br/>inventoryMode = cached-only"]:::dim
+  G1["发布新一代<br/>Skill 就绪 · MCP 预热中"]:::dim
+  S["mcpDiscoveryPublication<br/>next = immediate"]:::dim
+  C2["候选二<br/>inventoryMode = discover"]:::dim
+  G2["再发布一代<br/>带 MCP 工具"]:::dim
+  T["下一个 Turn<br/>Skill 和工具都有"]:::dim
+  X["在两代之间开始的 Turn<br/>有 Skill，没有 MCP 工具"]:::dim
+  W --> C1 --> G1 --> S --> C2 --> G2 --> T
+  G1 -.-> X
+--- 候选一用缓存里的 `tools/list` 清单对齐服务器。没有缓存的服务器没有工具，记 `MCP_SERVER_WARMING`（预热中）。很快就备好了。
+flowchart LR
+  W["目录变化<br/>去抖 150ms 后重建"]:::done
+  C1["候选一<br/>inventoryMode = cached-only"]:::on
+  G1["发布新一代<br/>Skill 就绪 · MCP 预热中"]:::dim
+  S["mcpDiscoveryPublication<br/>next = immediate"]:::dim
+  C2["候选二<br/>inventoryMode = discover"]:::dim
+  G2["再发布一代<br/>带 MCP 工具"]:::dim
+  T["下一个 Turn<br/>Skill 和工具都有"]:::dim
+  X["在两代之间开始的 Turn<br/>有 Skill，没有 MCP 工具"]:::dim
+  W --> C1 --> G1 --> S --> C2 --> G2 --> T
+  G1 -.-> X
+--- 候选一发布成新一代：插件的 Skill 立刻可用，MCP 工具暂时没有。**在这个窗口里开始的 Turn 有 Skill、没有工具**。
+flowchart LR
+  W["目录变化<br/>去抖 150ms 后重建"]:::done
+  C1["候选一<br/>inventoryMode = cached-only"]:::done
+  G1["发布新一代<br/>Skill 就绪 · MCP 预热中"]:::on
+  S["mcpDiscoveryPublication<br/>next = immediate"]:::dim
+  C2["候选二<br/>inventoryMode = discover"]:::dim
+  G2["再发布一代<br/>带 MCP 工具"]:::dim
+  T["下一个 Turn<br/>Skill 和工具都有"]:::dim
+  X["在两代之间开始的 Turn<br/>有 Skill，没有 MCP 工具"]:::on
+  W --> C1 --> G1 --> S --> C2 --> G2 --> T
+  G1 -.-> X
+--- `mcpDiscoveryPublication`（`publication.ts` L767-L785）：`cached-only` 且有失败的服务器，`next` 是 `'immediate'`，发布成功后调度器马上安排下一步。
+flowchart LR
+  W["目录变化<br/>去抖 150ms 后重建"]:::done
+  C1["候选一<br/>inventoryMode = cached-only"]:::done
+  G1["发布新一代<br/>Skill 就绪 · MCP 预热中"]:::done
+  S["mcpDiscoveryPublication<br/>next = immediate"]:::on
+  C2["候选二<br/>inventoryMode = discover"]:::dim
+  G2["再发布一代<br/>带 MCP 工具"]:::dim
+  T["下一个 Turn<br/>Skill 和工具都有"]:::dim
+  X["在两代之间开始的 Turn<br/>有 Skill，没有 MCP 工具"]:::done
+  W --> C1 --> G1 --> S --> C2 --> G2 --> T
+  G1 -.-> X
+--- `PluginMcpDiscoveryScheduler` 在后台用 `discover` 模式准备候选二，真正联网 `tools/list`（超时 15 秒）。这是慢的部分，旧代照常服务，发布门没关。
+flowchart LR
+  W["目录变化<br/>去抖 150ms 后重建"]:::done
+  C1["候选一<br/>inventoryMode = cached-only"]:::done
+  G1["发布新一代<br/>Skill 就绪 · MCP 预热中"]:::done
+  S["mcpDiscoveryPublication<br/>next = immediate"]:::done
+  C2["候选二<br/>inventoryMode = discover"]:::on
+  G2["再发布一代<br/>带 MCP 工具"]:::dim
+  T["下一个 Turn<br/>Skill 和工具都有"]:::dim
+  X["在两代之间开始的 Turn<br/>有 Skill，没有 MCP 工具"]:::done
+  W --> C1 --> G1 --> S --> C2 --> G2 --> T
+  G1 -.-> X
+--- 候选二发布成再一代，这一代带着工具。发现失败则按 10/30/60/120/300 秒退避重试。之后开始的 Turn 才有这些工具。
+flowchart LR
+  W["目录变化<br/>去抖 150ms 后重建"]:::done
+  C1["候选一<br/>inventoryMode = cached-only"]:::done
+  G1["发布新一代<br/>Skill 就绪 · MCP 预热中"]:::done
+  S["mcpDiscoveryPublication<br/>next = immediate"]:::done
+  C2["候选二<br/>inventoryMode = discover"]:::done
+  G2["再发布一代<br/>带 MCP 工具"]:::on
+  T["下一个 Turn<br/>Skill 和工具都有"]:::on
+  X["在两代之间开始的 Turn<br/>有 Skill，没有 MCP 工具"]:::done
+  W --> C1 --> G1 --> S --> C2 --> G2 --> T
+  G1 -.-> X
+:::
+
 host 里没有第二段，因为后台发现就是再调用一次 `update`。
 
 模型看到的工具名也有讲究。MCP 服务器和工具的原名里可能有空格、中文、斜杠，而模型接口只接受规整的名字：
@@ -299,6 +454,20 @@ SKILL.md 怎么读？先看插件包一路的解析函数：
 
 Claude Code 一列来自 `utils/plugins/refresh.ts` 的头部注释和 `refreshActivePlugins` 的实现；它是“交互式的单用户 CLI”这个场景下的选择，更新由用户明确触发，状态原地换。MiniMax 同时服务多个会话和机器触发的更新，代价是整套租约、门、两阶段发布的复杂度。收益是更新永远不会打断别人的 Turn。
 
+同一个问题——“更新撞上进行中的 Turn”——在三份代码里的答案，切换标签对照：
+
+::: tabs
+@@ Pi
+@pi packages/coding-agent/src/modes/interactive/interactive-mode.ts#L6532-L6540 hl=6533-6536
+模型还在输出时直接拒绝 `/reload`：不让更新发生。
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/agent-host/assembly/turn-capability-lifecycle.ts#L172-L206 hl=189-194
+Turn 开始时抓取当前代并加租约，读取和加租约之间没有 `await`；更新则在旁边发布新的一代。
+@@ host
+@code host/src/plugins.mjs#capture hl=138,141-142
+同一个临界区的压缩版：等门，然后在没有 `await` 的一段里读当前视图并 `retain`。
+:::
+
 ## 动手：host 里的 createPlugins
 
 `host/src/plugins.mjs` 把上面几处压成一个 `createPlugins()`，API 和之前一样：`update`、`capture`、`close`。租约用的是**真实的** `PluginCapabilityGenerationRegistry`（装载上游文件，不重写）；门、临界区、旁边备候选、提交与切换是 host 自己的实现。先看更新：
@@ -317,9 +486,22 @@ Claude Code 一列来自 `utils/plugins/refresh.ts` 的头部注释和 `refreshA
 
 十五行事件（含各个关闭和 finalizer 的顺序）全部一致。回归实验 `node labs/chapters/08-plugins-mcp.mjs` 在此之上补了几条失败路径：发现失败时当前代原样保留，`commit` 失败时候选被关掉、`rollback` 被调用、发布门重新打开，关闭时正在发现的候选（一个真实的 MCP 进程）也会被关掉，不留孤儿进程。
 
-Skill 的三种态度在 `host/src/skills.mjs`：
+Skill 的三种态度在 `host/src/skills.mjs`。三个上游读取器各占一个标签，最后一个是 host 把它们合成一个类的写法：
 
+::: tabs
+@@ 官方包 strict
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin/package/minimax-reader.ts#L94-L101 hl=96-99
+`Promise.all`：任何一个 Skill 抛出，整个包读取失败。
+@@ Agent Skills 包 skip
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin/package/agent-plugin-reader.ts#L182-L204 hl=186,191-197,199-202
+每个 Skill 单独 `try`：坏的记诊断并跳过，循环继续。
+@@ 用户目录 lenient
+@mm packages/agent-modules/skills/src/registry.ts#L675-L712 hl=681-683,685-702,703-711
+`parseSkillFile` 从不拒绝：缺的字段退回目录名或正文第一段，记成警告。
+@@ host
 @code host/src/skills.mjs#Skills collapse=true
+`policy` 取 `strict`、`skip`、`lenient`，规则共用，只有失败时的反应不同。
+:::
 
 `policy` 取 `strict`（默认，和以前一样）、`skip`、`lenient`。`load(name)` 每次都重新读文件，所以独立 Skill 总是当场的内容；插件 Skill 不走这里，它的正文在 `capture()` 返回的视图里，随那一代冻结。
 

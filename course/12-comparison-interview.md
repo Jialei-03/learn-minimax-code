@@ -40,6 +40,102 @@ A 在跑一个不会自己结束的长任务。这时插件更新出了新的一
 
 B 的修复过程（第二张表）里，第一步 `test` 是真实失败：`slug("a  b")` 得到 `a--b`。后面的 Skill 来自 R2 带来的插件 Skill `course:repair-guide`，A 的提示里没有它。第三张表是 SDK 一侧：客户端手里只有帧，A 还原成 `cancelled` 且消息 item 带着未完成标记，B 还原成 `completed`；第 9 帧后断线再用游标接上、新客户端整段重放，结果都和直播一致；只拿游标之后的帧，缺口当场暴露。
 
+把关键的七个时刻连起来，看会话、两代插件和队列怎样一起变化：
+
+::: steps 取消、更新、排队、修复：十五步里最关键的七个时刻
+--- 步骤 1：插件 R1 发布，MCP 子进程起来了。会话空闲，队列是空的。
+flowchart LR
+  S["会话：空闲"]:::dim
+  A["A：未开始"]:::dim
+  R1["R1：运行中"]:::on
+  R2["R2：未发布"]:::dim
+  Q["队列：空"]:::dim
+  B["B：未开始"]:::dim
+  S -.-> A
+  A -- 租约 --> R1
+  Q -- 继续 --> B
+  B -- 租约 --> R2
+  S ~~~ Q
+--- 步骤 2：用户发来 A。`sessions.admit` 接纳，A **抓走 R1 和模板 v1**，长任务在真进程里跑起来。会话变成“A 占用”。
+flowchart LR
+  S["会话：A 占用"]:::on
+  A["A：长任务运行中<br/>持有 R1 的租约"]:::on
+  R1["R1：运行中"]:::done
+  R2["R2：未发布"]:::dim
+  Q["队列：空"]:::dim
+  B["B：未开始"]:::dim
+  S -.-> A
+  A -- 租约 --> R1
+  Q -- 继续 --> B
+  B -- 租约 --> R2
+  S ~~~ Q
+--- 步骤 3：插件更新，R2 发布。R1 的进程**仍在运行**：A 手里握着它的租约，旧代不能关。
+flowchart LR
+  S["会话：A 占用"]:::done
+  A["A：长任务运行中<br/>持有 R1 的租约"]:::done
+  R1["R1：运行中（被 A 持有）"]:::done
+  R2["R2：运行中"]:::on
+  Q["队列：空"]:::dim
+  B["B：未开始"]:::dim
+  S -.-> A
+  A -- 租约 --> R1
+  Q -- 继续 --> B
+  B -- 租约 --> R2
+  S ~~~ Q
+--- 步骤 4～5：用户发来 B，会话在忙，写进队列（重发同一个 `clientRequestId` 拿回同一行）。接着模板和 `CLAUDE.md` 被改了，A 的快照早拍过了，不受影响。
+flowchart LR
+  S["会话：A 占用"]:::done
+  A["A：长任务运行中<br/>快照不变"]:::done
+  R1["R1：运行中（被 A 持有）"]:::done
+  R2["R2：运行中"]:::done
+  Q["队列：B pending"]:::on
+  B["B：未开始"]:::dim
+  S -.-> A
+  A -- 租约 --> R1
+  Q -- 继续 --> B
+  B -- 租约 --> R2
+  S ~~~ Q
+--- 步骤 6～8：用户按停止，`app.cancel` 只是发出意愿。会话仍是“A 占用”，立刻 `next()` 被拒绝（session busy）；终态帧 `turn.completed(cancelled)` 要等客户端那头写完。
+flowchart LR
+  S["会话：A 占用<br/>next() 被拒绝"]:::on
+  A["A：正在收尾<br/>工具进程被结束"]:::on
+  R1["R1：运行中（被 A 持有）"]:::done
+  R2["R2：运行中"]:::done
+  Q["队列：B pending"]:::done
+  B["B：未开始"]:::dim
+  S -.-> A
+  A -- 租约 --> R1
+  Q -- 继续 --> B
+  B -- 租约 --> R2
+  S ~~~ Q
+--- 步骤 9～10：A 放手。`run` 返回 `cancelled`，R1 的最后一个租约还掉、进程退出，队列因 `user-stop` 暂停，会话空闲。此时 `next()` 返回 `undefined`：用户刚按过停止，B 不该自己跑起来。
+flowchart LR
+  S["会话：空闲<br/>next() 不运行 B"]:::on
+  A["A：cancelled"]:::done
+  R1["R1：已退出"]:::on
+  R2["R2：运行中"]:::done
+  Q["队列：B pending（暂停）"]:::on
+  B["B：未开始"]:::dim
+  S -.-> A
+  A -- 租约 --> R1
+  Q -- 继续 --> B
+  B -- 租约 --> R2
+  S ~~~ Q
+--- 步骤 11～13：用户点“继续”，B 接纳，抓到的是 **R2、模板 v2 和新的 `CLAUDE.md`**；先看到测试失败，改完再跑通过，队列项变成 `consumed`。应用关闭时，当前代 R2 才关（步骤 15）。
+flowchart LR
+  S["会话：B 占用 → 空闲"]:::done
+  A["A：cancelled"]:::done
+  R1["R1：已退出"]:::done
+  R2["R2：运行中（被 B 持有）"]:::on
+  Q["队列：B consumed"]:::done
+  B["B：completed，测试通过"]:::on
+  S -.-> A
+  A -- 租约 --> R1
+  Q -- 继续 --> B
+  B -- 租约 --> R2
+  S ~~~ Q
+:::
+
 想一步一步看，用下面的回放（每一步的右侧是消息和那一刻的宿主状态）：
 
 @trace node labs/ch12/trace.mjs
@@ -167,7 +263,80 @@ Turn 的结局出来之后，协调器做收尾：
 
 把五处合起来看，取消之后到 B 开始，MiniMax 是这个顺序，host 的实验里完整重现了：
 
-```mermaid
+::: steps 取消之后到 B 开始：终态、租约、暂停、释放的次序
+--- 停止只是发出意愿：`signal.abort` 让工具子进程退出，工具结果记为 `cancelled`。这时会话仍被 A 占用。
+sequenceDiagram
+  participant U as 用户
+  participant App as app.cancel / run
+  participant T as 工具进程 slow.cjs
+  participant W as 事件出口 SerialDelivery
+  participant P as 插件 R1
+  participant Q as WorkQueue
+  U->>App: 停止
+  App->>T: signal.abort，结束子进程
+  T-->>App: 进程退出，工具结果 cancelled
+--- **终态帧先于释放**：`turn.completed(cancelled)` 要等客户端那一头写完（实验里故意慢了 60 毫秒）才算送达。第 2 章讲过终态帧是提交点，这里是它的另一个后果：**会话不会在终态之前被放开**。
+sequenceDiagram
+  participant U as 用户
+  participant App as app.cancel / run
+  participant T as 工具进程 slow.cjs
+  participant W as 事件出口 SerialDelivery
+  participant P as 插件 R1
+  participant Q as WorkQueue
+  U->>App: 停止
+  App->>T: signal.abort，结束子进程
+  T-->>App: 进程退出，工具结果 cancelled
+  App->>W: turn.completed(cancelled)
+  W-->>App: 终态帧送达客户端
+--- 收尾第一件事：还能力租约。R1 已被 R2 取代，A 是它的最后一个持有者，所以租约归零的这一刻，R1 的进程才关（`local-agent-host.ts` 的 `finally` 里 `capabilityLease?.release()`）。
+sequenceDiagram
+  participant U as 用户
+  participant App as app.cancel / run
+  participant T as 工具进程 slow.cjs
+  participant W as 事件出口 SerialDelivery
+  participant P as 插件 R1
+  participant Q as WorkQueue
+  U->>App: 停止
+  App->>T: signal.abort，结束子进程
+  T-->>App: 进程退出，工具结果 cancelled
+  App->>W: turn.completed(cancelled)
+  W-->>App: 终态帧送达客户端
+  App->>P: capabilities.release()
+  P-->>P: 最后一个租约，close R1
+--- 接着分流插话，并在释放会话**之前**决定队列要不要暂停：原因是 `user-stop`，所以暂停。MiniMax 把它和终态结算写进同一次 `settleRepository`（L301-L308），“Turn 结束”和“队列暂停”不会只发生一半。
+sequenceDiagram
+  participant U as 用户
+  participant App as app.cancel / run
+  participant T as 工具进程 slow.cjs
+  participant W as 事件出口 SerialDelivery
+  participant P as 插件 R1
+  participant Q as WorkQueue
+  U->>App: 停止
+  App->>T: signal.abort，结束子进程
+  T-->>App: 进程退出，工具结果 cancelled
+  App->>W: turn.completed(cancelled)
+  W-->>App: 终态帧送达客户端
+  App->>P: capabilities.release()
+  P-->>P: 最后一个租约，close R1
+  App->>Q: 分流插话，pauseIfPending(user-stop)
+--- 最后才 `sessions.release()` 并兑现 `completion`（MiniMax 对应 `controller.complete`，L313）。会话空闲了，但队列是暂停的，B 不会自己开始：被取消的 Turn 不唤醒派发器。
+sequenceDiagram
+  participant U as 用户
+  participant App as app.cancel / run
+  participant T as 工具进程 slow.cjs
+  participant W as 事件出口 SerialDelivery
+  participant P as 插件 R1
+  participant Q as WorkQueue
+  U->>App: 停止
+  App->>T: signal.abort，结束子进程
+  T-->>App: 进程退出，工具结果 cancelled
+  App->>W: turn.completed(cancelled)
+  W-->>App: 终态帧送达客户端
+  App->>P: capabilities.release()
+  P-->>P: 最后一个租约，close R1
+  App->>Q: 分流插话，pauseIfPending(user-stop)
+  App->>App: sessions.release()，兑现 completion
+--- 用户点“继续”：`continueQueue`，claim B，`accept` 写回执；B 拍照，抓到的是 R2 和新模板。每一次交接，下一个负责人都已经把账记好了。
 sequenceDiagram
   participant U as 用户
   participant App as app.cancel / run
@@ -187,7 +356,7 @@ sequenceDiagram
   U->>App: 继续
   App->>Q: continueQueue，claim B，accept（回执）
   App->>App: B 拍照：R2、新模板
-```
+:::
 
 ## host 的总装：`run()` 的七步
 
@@ -199,13 +368,30 @@ host 把五处装配压成了 `app.mjs` 里的一个函数。先看进门的这�
 
 接着是拍照、装配、回执：
 
+::: tabs
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/agent-host/local-agent-host.ts#L190-L204 hl=191-203
+`acquire` 当前的能力代，拿到的 `capabilityLease` 带到 `finally` 才归还；`prepare` 和 `assembleTurn` 读的是同一代。
+@@ host
 @code host/src/app.mjs#L196-L222 hl=202-207,212-219,222
+`loadPromptLayers` 与模板快照同一刻，再 `plugins.capture()` 抓一代，最后 `queue.accept` 写回执。
+:::
 
 第 202～206 行的 `loadPromptLayers` 是第 5 章留下的缺口：它读磁盘上的项目指令（`CLAUDE.md` 或 `AGENTS.md`）、全局指令和记忆，并且和模板快照发生在**同一个时刻**——都在 `await plugins.capture()` 之前，所以发布门关着时的等待不会让两者拍出不同的“现在”。第 214 行的 `skill` 工具同时认独立 Skill（每次读磁盘）和这一代插件 Skill（正文随代冻结），清单一起进系统提示。第 222 行是第 9 章的回执：Turn 先接纳这条消息，队列才确认。
 
 然后是执行和收尾：
 
+::: tabs
+@@ Pi
+@pi packages/agent/src/agent.ts#L517-L541
+`runWithLifecycle`：设置 `activeRun`，`try`/`catch`/`finally` 里 `finishRun()` 清状态。没有租约、队列和暂停，收尾只清自己的状态。
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/execution/execution.coordinator.ts#L290-L327 hl=299,301-308,313,321-323
+先提交落下来的插话，终态结算与队列暂停写在同一次 `settleRepository`，然后 `controller.complete`，满足条件才 `released.publish`。
+@@ host
 @code host/src/app.mjs#L224-L266 hl=237-238,249-252,257-260
+还能力租约，分流插话，在释放会话之前决定队列要不要暂停，然后消费队列项。
+:::
 
 交给 `runTurn` 的这一包参数，就是 `createAgentHostProductionDependencies` 那个接口的 host 版：`compaction`、`steering` 是这一章接进去的，`persist` 有两个出口——追加新消息，或者压缩之后用 `sessions.replace` 整份替换（旧行留在日志里当存档）。第 257～260 行的四行就是上面时序图的后半段：还能力租约，分流插话，在释放会话**之前**决定队列要不要暂停，然后消费队列项（`consume` 只在事件已送达、历史已落盘时发生）。
 

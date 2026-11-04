@@ -69,6 +69,179 @@ sequenceDiagram
   H->>W: 队列排空、历史对齐、turn-end 处理之后<br/>提交终态并确认
 ```
 
+同一张图，一步一步走一遍：
+
+::: steps 一个 Turn 的八步
+--- 宿主调用 `runTurn`，Step 1 `newTurn`（L141）：为这一次运行新建 EventBridge、事件序号计数器、工具和 `streamFn`。`PiTurnRunner` 对象自己只保存进程级默认值，所以每个 Turn 的状态都是私有的。
+flowchart TD
+  H["宿主 LocalAgentHost.run"]:::done
+  S1["Step 1 newTurn<br/>bridge · 序号 · 工具 · streamFn"]:::on
+  S2["Step 2 emitRunning<br/>running 状态帧"]:::dim
+  S3["Step 3 newAgent · newHistory"]:::dim
+  S4["Step 4 setToolHooks · setLLMHook"]:::dim
+  S5["Step 5 subscribeEvents<br/>一条串行队列"]:::dim
+  S6{"Step 6<br/>signal 已取消？"}:::dim
+  S7["Step 7 runAgent<br/>agent.prompt · waitForIdle"]:::dim
+  S8["Step 8 drain · flushTail<br/>决定结局 · emitTerminal"]:::dim
+  AB["不启动 Agent<br/>unsubscribe · drain · 发 aborted"]:::dim
+  HC["宿主暂存终态<br/>排空、对齐后提交"]:::dim
+  H --> S1
+  S1 --> S2
+  S2 --> S3
+  S3 --> S4
+  S4 --> S5
+  S5 --> S6
+  S6 -->|否| S7
+  S7 --> S8
+  S8 --> HC
+  S6 -->|是| AB
+  AB --> HC
+--- Step 2 `emitRunning`（L151）：第一个事件是 `session.status`，状态 running，发在模型和任何工具有输出之前。这一步的 writer 如果失败，`emitRunning` 直接抛出，Turn 根本不开始。
+flowchart TD
+  H["宿主 LocalAgentHost.run"]:::done
+  S1["Step 1 newTurn<br/>bridge · 序号 · 工具 · streamFn"]:::done
+  S2["Step 2 emitRunning<br/>running 状态帧"]:::on
+  S3["Step 3 newAgent · newHistory"]:::dim
+  S4["Step 4 setToolHooks · setLLMHook"]:::dim
+  S5["Step 5 subscribeEvents<br/>一条串行队列"]:::dim
+  S6{"Step 6<br/>signal 已取消？"}:::dim
+  S7["Step 7 runAgent<br/>agent.prompt · waitForIdle"]:::dim
+  S8["Step 8 drain · flushTail<br/>决定结局 · emitTerminal"]:::dim
+  AB["不启动 Agent<br/>unsubscribe · drain · 发 aborted"]:::dim
+  HC["宿主暂存终态<br/>排空、对齐后提交"]:::dim
+  H --> S1
+  S1 --> S2
+  S2 --> S3
+  S3 --> S4
+  S4 --> S5
+  S5 --> S6
+  S6 -->|否| S7
+  S7 --> S8
+  S8 --> HC
+  S6 -->|是| AB
+  AB --> HC
+--- Step 3 `newAgent`（L156）把系统提示、模型、工具和历史交给 Pi 的 `Agent`，`newHistory`（L177）造出历史游标；Step 4（L181-182）在工具外面装 `setToolHooks`，在每次模型调用外面装 `setLLMHook`。
+flowchart TD
+  H["宿主 LocalAgentHost.run"]:::done
+  S1["Step 1 newTurn<br/>bridge · 序号 · 工具 · streamFn"]:::done
+  S2["Step 2 emitRunning<br/>running 状态帧"]:::done
+  S3["Step 3 newAgent · newHistory"]:::on
+  S4["Step 4 setToolHooks · setLLMHook"]:::on
+  S5["Step 5 subscribeEvents<br/>一条串行队列"]:::dim
+  S6{"Step 6<br/>signal 已取消？"}:::dim
+  S7["Step 7 runAgent<br/>agent.prompt · waitForIdle"]:::dim
+  S8["Step 8 drain · flushTail<br/>决定结局 · emitTerminal"]:::dim
+  AB["不启动 Agent<br/>unsubscribe · drain · 发 aborted"]:::dim
+  HC["宿主暂存终态<br/>排空、对齐后提交"]:::dim
+  H --> S1
+  S1 --> S2
+  S2 --> S3
+  S3 --> S4
+  S4 --> S5
+  S5 --> S6
+  S6 -->|否| S7
+  S7 --> S8
+  S8 --> HC
+  S6 -->|是| AB
+  AB --> HC
+--- Step 5 `subscribeEvents`（L190）：Pi 的每个事件都送进同一条队列，在队列里翻译、写出、写历史。从这一步起，Agent 一发事件就有人接。
+flowchart TD
+  H["宿主 LocalAgentHost.run"]:::done
+  S1["Step 1 newTurn<br/>bridge · 序号 · 工具 · streamFn"]:::done
+  S2["Step 2 emitRunning<br/>running 状态帧"]:::done
+  S3["Step 3 newAgent · newHistory"]:::done
+  S4["Step 4 setToolHooks · setLLMHook"]:::done
+  S5["Step 5 subscribeEvents<br/>一条串行队列"]:::on
+  S6{"Step 6<br/>signal 已取消？"}:::dim
+  S7["Step 7 runAgent<br/>agent.prompt · waitForIdle"]:::dim
+  S8["Step 8 drain · flushTail<br/>决定结局 · emitTerminal"]:::dim
+  AB["不启动 Agent<br/>unsubscribe · drain · 发 aborted"]:::dim
+  HC["宿主暂存终态<br/>排空、对齐后提交"]:::dim
+  H --> S1
+  S1 --> S2
+  S2 --> S3
+  S3 --> S4
+  S4 --> S5
+  S5 --> S6
+  S6 -->|否| S7
+  S7 --> S8
+  S8 --> HC
+  S6 -->|是| AB
+  AB --> HC
+--- Step 6（L202-216）：信号在启动前就已取消，就**不启动 Agent**，unsubscribe、drain 之后直接发 `aborted` 终态；否则把之后的取消转发给 `agent.abort()`。这里走“否”。
+flowchart TD
+  H["宿主 LocalAgentHost.run"]:::done
+  S1["Step 1 newTurn<br/>bridge · 序号 · 工具 · streamFn"]:::done
+  S2["Step 2 emitRunning<br/>running 状态帧"]:::done
+  S3["Step 3 newAgent · newHistory"]:::done
+  S4["Step 4 setToolHooks · setLLMHook"]:::done
+  S5["Step 5 subscribeEvents<br/>一条串行队列"]:::done
+  S6{"Step 6<br/>signal 已取消？"}:::on
+  S7["Step 7 runAgent<br/>agent.prompt · waitForIdle"]:::dim
+  S8["Step 8 drain · flushTail<br/>决定结局 · emitTerminal"]:::dim
+  AB["不启动 Agent<br/>unsubscribe · drain · 发 aborted"]:::dim
+  HC["宿主暂存终态<br/>排空、对齐后提交"]:::dim
+  H --> S1
+  S1 --> S2
+  S2 --> S3
+  S3 --> S4
+  S4 --> S5
+  S5 --> S6
+  S6 -->|否| S7
+  S7 --> S8
+  S8 --> HC
+  S6 -->|是| AB
+  AB --> HC
+--- Step 7 `runAgent`（L226-229）：用用户消息 `prompt` 一下 Agent，等它空闲。期间每个 Pi 事件进队列，`message_end` 和 `tool_execution_end` 之后各 `flushTail` 写历史。正常结束返回 `undefined`，无论成败 `finally` 都摘掉订阅。
+flowchart TD
+  H["宿主 LocalAgentHost.run"]:::done
+  S1["Step 1 newTurn<br/>bridge · 序号 · 工具 · streamFn"]:::done
+  S2["Step 2 emitRunning<br/>running 状态帧"]:::done
+  S3["Step 3 newAgent · newHistory"]:::done
+  S4["Step 4 setToolHooks · setLLMHook"]:::done
+  S5["Step 5 subscribeEvents<br/>一条串行队列"]:::done
+  S6{"Step 6<br/>signal 已取消？"}:::done
+  S7["Step 7 runAgent<br/>agent.prompt · waitForIdle"]:::on
+  S8["Step 8 drain · flushTail<br/>决定结局 · emitTerminal"]:::dim
+  AB["不启动 Agent<br/>unsubscribe · drain · 发 aborted"]:::dim
+  HC["宿主暂存终态<br/>排空、对齐后提交"]:::dim
+  H --> S1
+  S1 --> S2
+  S2 --> S3
+  S3 --> S4
+  S4 --> S5
+  S5 --> S6
+  S6 -->|否| S7
+  S7 --> S8
+  S8 --> HC
+  S6 -->|是| AB
+  AB --> HC
+--- Step 8（L237-240）：`drain`、`flushTail`，然后 `reason ?? events.forcedTermination() ?? { kind: 'completed' }` 决定结局，`emitTerminal` 把终态帧交出去。终态帧交给的是宿主，不是客户端。
+flowchart TD
+  H["宿主 LocalAgentHost.run"]:::done
+  S1["Step 1 newTurn<br/>bridge · 序号 · 工具 · streamFn"]:::done
+  S2["Step 2 emitRunning<br/>running 状态帧"]:::done
+  S3["Step 3 newAgent · newHistory"]:::done
+  S4["Step 4 setToolHooks · setLLMHook"]:::done
+  S5["Step 5 subscribeEvents<br/>一条串行队列"]:::done
+  S6{"Step 6<br/>signal 已取消？"}:::done
+  S7["Step 7 runAgent<br/>agent.prompt · waitForIdle"]:::done
+  S8["Step 8 drain · flushTail<br/>决定结局 · emitTerminal"]:::on
+  AB["不启动 Agent<br/>unsubscribe · drain · 发 aborted"]:::dim
+  HC["宿主暂存终态<br/>排空、对齐后提交"]:::dim
+  H --> S1
+  S1 --> S2
+  S2 --> S3
+  S3 --> S4
+  S4 --> S5
+  S5 --> S6
+  S6 -->|否| S7
+  S7 --> S8
+  S8 --> HC
+  S6 -->|是| AB
+  AB --> HC
+:::
+
 前三步是装配和宣布开始（中间 L157-L175 是只在开发版桌面 Inspector 里启用的上下文捕获，与主线无关，这里略去）：
 
 @mm packages/agent-core/src/pi-turn-runner/pi-turn-runner.ts#L132-L156 hl=141,151,156
@@ -151,9 +324,19 @@ Pi 的 `Agent.processEvents` 对每个事件，先更新自己的状态，再按
 
 事件是给界面看的，丢一帧界面只是少显示一点；历史是下一个 Turn 要读的事实，写不进去就必须停。这是我对设计意图的推断，代码本身只显示两条路径的差别。不过“事件失败不会让 Turn 立刻停”也不等于“没事发生”：宿主那层的队列会记住第一次失败，后面的历史写入会被它挡住，本章后面会读到。
 
-host 里的 `SerialDelivery` 实现这条队列，并带着宿主 lane 的规则：
+同一件事——“事件从不同分支冒出来，怎样排成一行”——在三份代码里的写法，切换标签对照着看。host 里的 `SerialDelivery` 实现这条队列，并带着宿主 lane 的规则：
 
+::: tabs
+@@ Pi
+@mm third_party/pi-mono/packages/agent/src/agent.ts#processEvents hl=555-558,574-577,585-591
+Pi 先更新自己的状态，再按订阅顺序依次 `await` 每个监听器；写得慢的 writer 会拖住整个 Agent（背压）。
+@@ MiniMax
+@mm packages/agent-core/src/pi-turn-runner/events.ts#L383-L395 hl=390-392
+`dispatch` 让每个事件接在队尾后面；队尾永远不 rejected，真实结果还给 Pi。
+@@ host
 @code host/src/events.mjs#SerialDelivery hl=42-61
+同样的队尾链，外加 `force` 帧：失败之后普通帧被跳过，终态帧照样尝试。
+:::
 
 `send` 每次把自己接在 `tail` 后面，写之前先 `structuredClone`，writer 拿到的是快照。第一次失败被记进 `error`，之后的普通帧计入 `skipped`、不再写，只有 `force: true` 的帧还会尝试，这正是宿主 `OrderedAgentEventLane` 里的 `continueAfterFailure`：失败或取消的终态必须尽力送出去，让客户端知道这个 Turn 结束了。`drain()` 先等队尾，再重新抛出第一个错误。
 
@@ -266,6 +449,226 @@ flowchart TD
   X -.-> J
 ```
 
+::: steps 终态：先暂存，再提交
+--- 循环停下，先决定结局：`runAgent` 返回了取消或失败就用它；否则看事件订阅设置的 `forcedTermination`（钩子整条否决了某个回复）；两者都没有才是 `completed`。
+flowchart TD
+  A["循环停下"]:::on
+  B{"runAgent 返回了<br/>取消或失败？"}:::on
+  C{"forcedTermination？"}:::on
+  T["termination = reason"]:::on
+  D["termination = completed"]:::on
+  E["emitTerminal<br/>翻译成帧，交给宿主"]:::dim
+  F["宿主 stage：暂存终态，先不转交"]:::dim
+  G["pipeline.drain<br/>重抛 lane 里的第一个失败"]:::dim
+  H["requireTerminal<br/>对齐历史 · turn-end 处理"]:::dim
+  I["commitOutcomeTerminal<br/>提交并核对"]:::dim
+  J["客户端看到终态"]:::dim
+  X["宿主 fail：造一个 failed 终态"]:::dim
+  A --> B
+  B -->|是| T
+  B -->|否| C
+  C -->|有| T
+  C -->|没有| D
+  T --> E
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  E -.抛出.-> X
+  G -.失败.-> X
+  H -.失败.-> X
+  I -.核对失败.-> X
+  X -.-> J
+--- `emitTerminal` 先把终态**翻译**成帧（同时冲出挂起的 completed 消息），再**写出**。两个阶段分别记归因：`event_bridge / translation` 与 `event_writer / delivery`。写出的目标是宿主，不是客户端。
+flowchart TD
+  A["循环停下"]:::done
+  B{"runAgent 返回了<br/>取消或失败？"}:::done
+  C{"forcedTermination？"}:::done
+  T["termination = reason"]:::done
+  D["termination = completed"]:::done
+  E["emitTerminal<br/>翻译成帧，交给宿主"]:::on
+  F["宿主 stage：暂存终态，先不转交"]:::dim
+  G["pipeline.drain<br/>重抛 lane 里的第一个失败"]:::dim
+  H["requireTerminal<br/>对齐历史 · turn-end 处理"]:::dim
+  I["commitOutcomeTerminal<br/>提交并核对"]:::dim
+  J["客户端看到终态"]:::dim
+  X["宿主 fail：造一个 failed 终态"]:::dim
+  A --> B
+  B -->|是| T
+  B -->|否| C
+  C -->|有| T
+  C -->|没有| D
+  T --> E
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  E -.抛出.-> X
+  G -.失败.-> X
+  H -.失败.-> X
+  I -.核对失败.-> X
+  X -.-> J
+--- 宿主认出终态事件：先 `claim`（一个 Turn 只许一个终态），再 `stage` 进 `TerminalEventBuffer`。暂存，不转交；失败和取消的终态即使 lane 已经断了也能暂存。
+flowchart TD
+  A["循环停下"]:::done
+  B{"runAgent 返回了<br/>取消或失败？"}:::done
+  C{"forcedTermination？"}:::done
+  T["termination = reason"]:::done
+  D["termination = completed"]:::done
+  E["emitTerminal<br/>翻译成帧，交给宿主"]:::done
+  F["宿主 stage：暂存终态，先不转交"]:::on
+  G["pipeline.drain<br/>重抛 lane 里的第一个失败"]:::dim
+  H["requireTerminal<br/>对齐历史 · turn-end 处理"]:::dim
+  I["commitOutcomeTerminal<br/>提交并核对"]:::dim
+  J["客户端看到终态"]:::dim
+  X["宿主 fail：造一个 failed 终态"]:::dim
+  A --> B
+  B -->|是| T
+  B -->|否| C
+  C -->|有| T
+  C -->|没有| D
+  T --> E
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  E -.抛出.-> X
+  G -.失败.-> X
+  H -.失败.-> X
+  I -.核对失败.-> X
+  X -.-> J
+--- `execute` 里 `capture` 完 runner 的结果，再 `capture(pipeline.drain())`：`drain` 重新抛出 lane 里记着的**第一个**失败。agent-core 里被吞掉的写出失败，在这里变成这个 Turn 的失败。
+flowchart TD
+  A["循环停下"]:::done
+  B{"runAgent 返回了<br/>取消或失败？"}:::done
+  C{"forcedTermination？"}:::done
+  T["termination = reason"]:::done
+  D["termination = completed"]:::done
+  E["emitTerminal<br/>翻译成帧，交给宿主"]:::done
+  F["宿主 stage：暂存终态，先不转交"]:::done
+  G["pipeline.drain<br/>重抛 lane 里的第一个失败"]:::on
+  H["requireTerminal<br/>对齐历史 · turn-end 处理"]:::dim
+  I["commitOutcomeTerminal<br/>提交并核对"]:::dim
+  J["客户端看到终态"]:::dim
+  X["宿主 fail：造一个 failed 终态"]:::dim
+  A --> B
+  B -->|是| T
+  B -->|否| C
+  C -->|有| T
+  C -->|没有| D
+  T --> E
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  E -.抛出.-> X
+  G -.失败.-> X
+  H -.失败.-> X
+  I -.核对失败.-> X
+  X -.-> J
+--- `LocalAgentHost.settleExecution`：`requireTerminal` 确认暂存的终态和 runner 的结局一致，`settleHistorySideEffects` 对齐历史，再执行 turn-end 处理器（插件钩子）。
+flowchart TD
+  A["循环停下"]:::done
+  B{"runAgent 返回了<br/>取消或失败？"}:::done
+  C{"forcedTermination？"}:::done
+  T["termination = reason"]:::done
+  D["termination = completed"]:::done
+  E["emitTerminal<br/>翻译成帧，交给宿主"]:::done
+  F["宿主 stage：暂存终态，先不转交"]:::done
+  G["pipeline.drain<br/>重抛 lane 里的第一个失败"]:::done
+  H["requireTerminal<br/>对齐历史 · turn-end 处理"]:::on
+  I["commitOutcomeTerminal<br/>提交并核对"]:::dim
+  J["客户端看到终态"]:::dim
+  X["宿主 fail：造一个 failed 终态"]:::dim
+  A --> B
+  B -->|是| T
+  B -->|否| C
+  C -->|有| T
+  C -->|没有| D
+  T --> E
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  E -.抛出.-> X
+  G -.失败.-> X
+  H -.失败.-> X
+  I -.核对失败.-> X
+  X -.-> J
+--- `commitOutcomeTerminal` 才把终态交给 `handleRuntimeEvent`，再用 `TerminalConfirmation` 核对被处理的终态和结局一致。客户端这时才看到终态，可以放开输入框。
+flowchart TD
+  A["循环停下"]:::done
+  B{"runAgent 返回了<br/>取消或失败？"}:::done
+  C{"forcedTermination？"}:::done
+  T["termination = reason"]:::done
+  D["termination = completed"]:::done
+  E["emitTerminal<br/>翻译成帧，交给宿主"]:::done
+  F["宿主 stage：暂存终态，先不转交"]:::done
+  G["pipeline.drain<br/>重抛 lane 里的第一个失败"]:::done
+  H["requireTerminal<br/>对齐历史 · turn-end 处理"]:::done
+  I["commitOutcomeTerminal<br/>提交并核对"]:::on
+  J["客户端看到终态"]:::on
+  X["宿主 fail：造一个 failed 终态"]:::dim
+  A --> B
+  B -->|是| T
+  B -->|否| C
+  C -->|有| T
+  C -->|没有| D
+  T --> E
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  E -.抛出.-> X
+  G -.失败.-> X
+  H -.失败.-> X
+  I -.核对失败.-> X
+  X -.-> J
+--- 任何一环失败（虚线）都走 `this.fail(...)`：宿主自己造一个 failed 终态提交。所以 runner 在 `emitTerminal` 之前抛出时，没有终态，客户端仍然会收到一个 failed。
+flowchart TD
+  A["循环停下"]:::done
+  B{"runAgent 返回了<br/>取消或失败？"}:::done
+  C{"forcedTermination？"}:::done
+  T["termination = reason"]:::done
+  D["termination = completed"]:::done
+  E["emitTerminal<br/>翻译成帧，交给宿主"]:::done
+  F["宿主 stage：暂存终态，先不转交"]:::done
+  G["pipeline.drain<br/>重抛 lane 里的第一个失败"]:::done
+  H["requireTerminal<br/>对齐历史 · turn-end 处理"]:::done
+  I["commitOutcomeTerminal<br/>提交并核对"]:::done
+  J["客户端看到终态"]:::on
+  X["宿主 fail：造一个 failed 终态"]:::on
+  A --> B
+  B -->|是| T
+  B -->|否| C
+  C -->|有| T
+  C -->|没有| D
+  T --> E
+  D --> E
+  E --> F
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  E -.抛出.-> X
+  G -.失败.-> X
+  H -.失败.-> X
+  I -.核对失败.-> X
+  X -.-> J
+:::
+
 宿主给每个 Turn 配了一条 `OrderedAgentEventLane`，事件和历史写入都排在里面：
 
 @mm packages/local-runtime-v2/src/service/turn-system/agent-host/events/turn-commit-pipeline.ts#L401-L431 hl=402-403,421-424,428
@@ -323,15 +726,22 @@ lane 之上，终态是这样进来的：
 
 游标从旧历史末尾开始，序号由 host 数，`SerialDelivery` 的 `onFailure` 接到 `recordFailure`：谁先失败，谁就是根因。一步的主体：
 
-@code host/src/turns.mjs#runStep hl=159-163,166-169,174-185
+@code host/src/turns.mjs#runStep hl=190-194,197-199,205-216
 
 两个边界对应前面读的源码：没有工具时 `item.completed` 立刻发，然后 `persistTail`；有工具时先 `persistTail` 再执行，工具结果回来后再写一次，最后才发带着调用最终状态的 `item.completed`。写历史的函数里藏着本章最关键的一条规则：
 
-@code host/src/turns.mjs#persistTail hl=305
+@code host/src/turns.mjs#persistTail hl=372
 
-事件队列已经出过错，就不再写历史，也不再往下执行。收尾：
+事件队列已经出过错，就不再写历史，也不再往下执行。收尾，和 MiniMax 的 Step 8 对照着看：
 
-@code host/src/turns.mjs#settleTurn hl=320,322,325-326,330-331,334-335
+::: tabs
+@@ MiniMax
+@mm packages/agent-core/src/pi-turn-runner/pi-turn-runner.ts#L231-L240 hl=237-240
+`drain`、`flushTail`、决定结局、`emitTerminal`，一行接一行。
+@@ host
+@code host/src/turns.mjs#settleTurn hl=387,389,392,398,401-402
+同样的顺序，外加一次确认：终态没送出去，`completed` 要改写成 `failed`。
+:::
 
 `drain`、补写历史、决定结局、发终态（失败和取消的终态 `force`）、确认送达。终态没有送出去时，一个 `completed` 不能算成功，这一行被改写成 `failed`。
 

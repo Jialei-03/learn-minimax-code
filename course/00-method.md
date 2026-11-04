@@ -58,6 +58,137 @@ flowchart TD
   PI --> TL["本地工具"]
 ```
 
+一条消息穿过这些层，一站一站走：
+
+::: steps 一条消息从入口穿到 Pi
+--- 三个入口各自是一个命令：`mcode`、`mcode exec`、`mcode acp`。以 `exec` 为例，`program.ts` 解析参数，把请求交给注入的 `runExec`。入口只负责参数、协议、输出格式和退出码。
+flowchart TD
+  T["mcode<br/>终端界面"]:::dim
+  E["mcode exec<br/>无界面，一次性"]:::on
+  A["mcode acp<br/>编辑器通过 stdio 连接"]:::dim
+  C["CliService<br/>进程内的产品门面"]:::dim
+  AP["Applications<br/>会话、队列、交互"]:::dim
+  SV["Session / Turn / Agent services<br/>持久化、排队、权限、插件、压缩……"]:::dim
+  AC["agent-core · pi-turn-runner<br/>把一个 Turn 装配成 Pi 的 Agent"]:::dim
+  PI["Pi（third_party/pi-mono）<br/>Agent 循环 · 模型协议 · 编码工具"]:::dim
+  M["模型服务"]:::dim
+  TL["本地工具"]:::dim
+  T --> C
+  E --> C
+  A --> C
+  C --> AP
+  AP --> SV
+  SV --> AC
+  AC --> PI
+  PI --> M
+  PI --> TL
+--- 三个入口共用的**汇合点**是 `CliService`。`exec` 调用 `sendMessage` 发一条消息、拿到事件流；终端界面和 ACP 调的是同一个方法。门面本身几乎不做事，每个方法都转交给某个 Application。
+flowchart TD
+  T["mcode<br/>终端界面"]:::dim
+  E["mcode exec<br/>无界面，一次性"]:::done
+  A["mcode acp<br/>编辑器通过 stdio 连接"]:::dim
+  C["CliService<br/>进程内的产品门面"]:::on
+  AP["Applications<br/>会话、队列、交互"]:::dim
+  SV["Session / Turn / Agent services<br/>持久化、排队、权限、插件、压缩……"]:::dim
+  AC["agent-core · pi-turn-runner<br/>把一个 Turn 装配成 Pi 的 Agent"]:::dim
+  PI["Pi（third_party/pi-mono）<br/>Agent 循环 · 模型协议 · 编码工具"]:::dim
+  M["模型服务"]:::dim
+  TL["本地工具"]:::dim
+  T --> C
+  E --> C
+  A --> C
+  C --> AP
+  AP --> SV
+  SV --> AC
+  AC --> PI
+  PI --> M
+  PI --> TL
+--- Application 管用例：校验输入、登记附件、失败时清理半成品、把结果翻译成稳定的错误契约。它自己不存会话状态。
+flowchart TD
+  T["mcode<br/>终端界面"]:::dim
+  E["mcode exec<br/>无界面，一次性"]:::done
+  A["mcode acp<br/>编辑器通过 stdio 连接"]:::dim
+  C["CliService<br/>进程内的产品门面"]:::done
+  AP["Applications<br/>会话、队列、交互"]:::on
+  SV["Session / Turn / Agent services<br/>持久化、排队、权限、插件、压缩……"]:::dim
+  AC["agent-core · pi-turn-runner<br/>把一个 Turn 装配成 Pi 的 Agent"]:::dim
+  PI["Pi（third_party/pi-mono）<br/>Agent 循环 · 模型协议 · 编码工具"]:::dim
+  M["模型服务"]:::dim
+  TL["本地工具"]:::dim
+  T --> C
+  E --> C
+  A --> C
+  C --> AP
+  AP --> SV
+  SV --> AC
+  AC --> PI
+  PI --> M
+  PI --> TL
+--- Service 层才是规则和存储：会话持久化、Turn 准入（“这个会话正忙”）、排队、权限、插件、压缩。状态在 SQLite 里，所有进程都得相信。
+flowchart TD
+  T["mcode<br/>终端界面"]:::dim
+  E["mcode exec<br/>无界面，一次性"]:::done
+  A["mcode acp<br/>编辑器通过 stdio 连接"]:::dim
+  C["CliService<br/>进程内的产品门面"]:::done
+  AP["Applications<br/>会话、队列、交互"]:::done
+  SV["Session / Turn / Agent services<br/>持久化、排队、权限、插件、压缩……"]:::on
+  AC["agent-core · pi-turn-runner<br/>把一个 Turn 装配成 Pi 的 Agent"]:::dim
+  PI["Pi（third_party/pi-mono）<br/>Agent 循环 · 模型协议 · 编码工具"]:::dim
+  M["模型服务"]:::dim
+  TL["本地工具"]:::dim
+  T --> C
+  E --> C
+  A --> C
+  C --> AP
+  AP --> SV
+  SV --> AC
+  AC --> PI
+  PI --> M
+  PI --> TL
+--- `agent-core` 的 `pi-turn-runner` 把一个 Turn 装配起来：每个 Turn 开始时用 `newAgent` 创建 Pi 的 `Agent`，把系统提示、模型、工具、历史交给它。这是整条链上第一次碰到 Pi。
+flowchart TD
+  T["mcode<br/>终端界面"]:::dim
+  E["mcode exec<br/>无界面，一次性"]:::done
+  A["mcode acp<br/>编辑器通过 stdio 连接"]:::dim
+  C["CliService<br/>进程内的产品门面"]:::done
+  AP["Applications<br/>会话、队列、交互"]:::done
+  SV["Session / Turn / Agent services<br/>持久化、排队、权限、插件、压缩……"]:::done
+  AC["agent-core · pi-turn-runner<br/>把一个 Turn 装配成 Pi 的 Agent"]:::on
+  PI["Pi（third_party/pi-mono）<br/>Agent 循环 · 模型协议 · 编码工具"]:::dim
+  M["模型服务"]:::dim
+  TL["本地工具"]:::dim
+  T --> C
+  E --> C
+  A --> C
+  C --> AP
+  AP --> SV
+  SV --> AC
+  AC --> PI
+  PI --> M
+  PI --> TL
+--- Pi 的循环（占全部代码的百分之一）让模型和工具轮流转，每走一步广播一个事件；其余都在它上面的那几层。MiniMax 不改循环，通过 Pi 暴露的选项和回调把产品逻辑接进去。
+flowchart TD
+  T["mcode<br/>终端界面"]:::dim
+  E["mcode exec<br/>无界面，一次性"]:::done
+  A["mcode acp<br/>编辑器通过 stdio 连接"]:::dim
+  C["CliService<br/>进程内的产品门面"]:::done
+  AP["Applications<br/>会话、队列、交互"]:::done
+  SV["Session / Turn / Agent services<br/>持久化、排队、权限、插件、压缩……"]:::done
+  AC["agent-core · pi-turn-runner<br/>把一个 Turn 装配成 Pi 的 Agent"]:::done
+  PI["Pi（third_party/pi-mono）<br/>Agent 循环 · 模型协议 · 编码工具"]:::on
+  M["模型服务"]:::dim
+  TL["本地工具"]:::dim
+  T --> C
+  E --> C
+  A --> C
+  C --> AP
+  AP --> SV
+  SV --> AC
+  AC --> PI
+  PI --> M
+  PI --> TL
+:::
+
 和 Pi 自己的分层对比一下就能看出重心：Pi 是“`Agent` 循环 → `AgentSession`（会话、压缩、扩展）→ 三种运行模式”，宿主层很薄；MiniMax 在循环和入口之间塞进了三层——门面、应用、服务——这三层占了将近一半的代码。
 
 ### 三个入口在哪里分开
@@ -72,7 +203,17 @@ flowchart TD
 
 三个 runner 最后都通过同一个门面访问运行时：`packages/local-runtime-v2/src/local/cli-service.ts` 里的 `CliService`。它有五十多个方法，覆盖会话、消息、分叉、回退、用量、队列、目标、工作区……其中最核心的几个动词是：
 
+::: tabs
+@@ MiniMax
 @mm packages/local-runtime-v2/src/local/cli-service.ts#L282-L329
+每个动词都转交给某个 Application，背后是数据库和事件流。
+@@ Pi
+@mm third_party/pi-mono/packages/agent/src/agent.ts#L354-L365 hl=358-362
+`prompt` 只看内存里的 `activeRun`：已经在跑就抛错，要求调用方改用 `steer()` 或 `followUp()`。
+@@ host
+@code host/src/adapters.mjs#RunCoordinator hl=127-129,153-155
+只管这个客户端自己的一次运行和取消句柄；跨进程的“忙”在 `Sessions` 的租约里（第 1 章）。
+:::
 
 `sendMessage`（发一条消息并拿到事件流）、`resumeSession`（接上一个会话的事件流）、`abortSession`（取消）、`steerSession`（插话）、`enqueueMessage`（排队）、`requestCompaction`（手动压缩）。门面本身几乎不做事，每个方法都转交给某个 Application；它的价值在于**给三个入口一份完全相同的能力清单**。终端界面能做的，编辑器通过 ACP 也能做，脚本通过 `exec` 也能做。第 1 章会沿着这里往下读。
 
@@ -152,6 +293,99 @@ Learn Pi Agent 从零写了 mox（一个 Agent），Learn Claude Code 写了 cod
 @code runtime/journal.mjs#Journal
 
 两个细节值得注意。追加之前先 `scan()`：如果最后一行没有换行（上次写到一半进程就崩了），把这半行截掉再写——**只修复末尾的半条**；如果中间某一行的哈希对不上，直接报错，绝不悄悄跳过。前者是正常的崩溃窗口，后者说明文件被改坏了，继续用只会让错误扩散。
+
+::: steps Journal 追加：先扫描，只修末尾的半行
+--- 追加之前先 `scan()`：读整个文件。如果最后一段没有换行，`scan` 把它排除在 `complete` 之外，只校验完整的行，并标记 `tail: true`。
+flowchart TD
+  AP["append(value)"]:::done
+  SC["scan()<br/>读整个文件"]:::on
+  CH{"每一行的 seq · prev · hash<br/>都对得上？"}:::dim
+  ERR["抛 journal integrity failure<br/>拒绝继续写"]:::dim
+  TL{"末尾那段没有换行？"}:::dim
+  TR["truncateSync<br/>截回最后一个换行"]:::dim
+  NEW["造新记录<br/>seq + 1 · prev = 上一条的 hash"]:::dim
+  WR["写一行，fsync，返回"]:::dim
+  AP --> SC
+  SC --> CH
+  CH -->|否| ERR
+  CH -->|是| TL
+  TL -->|是| TR
+  TL -->|否| NEW
+  TR --> NEW
+  NEW --> WR
+--- 逐行校验：序号必须是 1、2、3……，`prev` 必须等于上一条的 `hash`，`hash` 必须等于重新算出来的摘要。完整的行全部对得上，才继续。
+flowchart TD
+  AP["append(value)"]:::done
+  SC["scan()<br/>读整个文件"]:::done
+  CH{"每一行的 seq · prev · hash<br/>都对得上？"}:::on
+  ERR["抛 journal integrity failure<br/>拒绝继续写"]:::dim
+  TL{"末尾那段没有换行？"}:::dim
+  TR["truncateSync<br/>截回最后一个换行"]:::dim
+  NEW["造新记录<br/>seq + 1 · prev = 上一条的 hash"]:::dim
+  WR["写一行，fsync，返回"]:::dim
+  AP --> SC
+  SC --> CH
+  CH -->|否| ERR
+  CH -->|是| TL
+  TL -->|是| TR
+  TL -->|否| NEW
+  TR --> NEW
+  NEW --> WR
+--- 如果坏的是**中间**某一行（被人改过，或者磁盘出错），校验对不上，直接抛 `journal integrity failure`，拒绝继续写。绝不悄悄跳过：继续用只会让错误扩散。
+flowchart TD
+  AP["append(value)"]:::done
+  SC["scan()<br/>读整个文件"]:::done
+  CH{"每一行的 seq · prev · hash<br/>都对得上？"}:::on
+  ERR["抛 journal integrity failure<br/>拒绝继续写"]:::on
+  TL{"末尾那段没有换行？"}:::dim
+  TR["truncateSync<br/>截回最后一个换行"]:::dim
+  NEW["造新记录<br/>seq + 1 · prev = 上一条的 hash"]:::dim
+  WR["写一行，fsync，返回"]:::dim
+  AP --> SC
+  SC --> CH
+  CH -->|否| ERR
+  CH -->|是| TL
+  TL -->|是| TR
+  TL -->|否| NEW
+  TR --> NEW
+  NEW --> WR
+--- 如果只是**末尾**缺换行（上次写到一半进程就崩了），`scan.tail` 为真：`append` 先 `truncateSync` 截回最后一个完整的换行。半行是没提交的数据，可以安全丢弃。
+flowchart TD
+  AP["append(value)"]:::done
+  SC["scan()<br/>读整个文件"]:::done
+  CH{"每一行的 seq · prev · hash<br/>都对得上？"}:::done
+  ERR["抛 journal integrity failure<br/>拒绝继续写"]:::dim
+  TL{"末尾那段没有换行？"}:::on
+  TR["truncateSync<br/>截回最后一个换行"]:::on
+  NEW["造新记录<br/>seq + 1 · prev = 上一条的 hash"]:::dim
+  WR["写一行，fsync，返回"]:::dim
+  AP --> SC
+  SC --> CH
+  CH -->|否| ERR
+  CH -->|是| TL
+  TL -->|是| TR
+  TL -->|否| NEW
+  TR --> NEW
+  NEW --> WR
+--- 造新记录：序号接着数，`prev` 接上一条的哈希，写一行并立刻 `fsync`。返回成功时数据已经落盘，序号连续，哈希链不断。
+flowchart TD
+  AP["append(value)"]:::done
+  SC["scan()<br/>读整个文件"]:::done
+  CH{"每一行的 seq · prev · hash<br/>都对得上？"}:::done
+  ERR["抛 journal integrity failure<br/>拒绝继续写"]:::dim
+  TL{"末尾那段没有换行？"}:::done
+  TR["truncateSync<br/>截回最后一个换行"]:::done
+  NEW["造新记录<br/>seq + 1 · prev = 上一条的 hash"]:::on
+  WR["写一行，fsync，返回"]:::on
+  AP --> SC
+  SC --> CH
+  CH -->|否| ERR
+  CH -->|是| TL
+  TL -->|是| TR
+  TL -->|否| NEW
+  TR --> NEW
+  NEW --> WR
+:::
 
 第二块是 `runtime/files.mjs` 的 `workspacePath`：任何工具要访问的路径都先经过它，拒绝 `..` 越界，也拒绝通过符号链接跳出工作区。
 

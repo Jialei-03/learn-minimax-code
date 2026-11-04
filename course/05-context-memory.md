@@ -69,6 +69,207 @@ flowchart TD
   L --> M["Pi Agent：这个 Turn 的每次请求都用同一份"]
 ```
 
+换成一步一步的演示，看材料怎样在 Turn 开头被捕获、拼好、冻住：
+
+::: steps 提示在 Turn 开头冻结
+--- Turn 被接纳后，`LocalAgentHost.run` 先领能力租约（`capability_acquisition`，第 8 章）：这一轮能用哪些插件、Skill 和工具，先定下来。
+flowchart TD
+  A["Turn 被接纳<br/>LocalAgentHost.run"]:::done
+  B["领取能力租约<br/>capability_acquisition"]:::on
+  C["TurnPreflight.prepare<br/>捕获会话、Agent 快照、历史"]:::dim
+  D{"Registry 里有提前渲染的<br/>提示快照吗？take 的结果"}:::dim
+  E["沿用那份快照"]:::dim
+  F["source.capture 现拍一份"]:::dim
+  G["buildPrepared<br/>整套模板都从这一份快照读"]:::dim
+  H["loadPromptLayers<br/>项目指令 · 全局指令 · 记忆 · Skill 目录"]:::dim
+  I["buildSystemPrompt<br/>composePromptParts 拼成一个字符串"]:::dim
+  J["Object.freeze(agentConfig)<br/>system_prompt 冻住"]:::dim
+  K["assembleTurn<br/>扩展贡献前缀、工具、reminder"]:::dim
+  L["prepareRunnerInput<br/>系统提示 = 扩展前缀 + system_prompt<br/>用户消息 = reminder 前缀 + 用户原话"]:::dim
+  M["Pi Agent<br/>这个 Turn 的每次请求都用同一份"]:::dim
+  A --> B
+  B --> C
+  C --> D
+  D -->|有| E
+  D -->|没有| F
+  E --> G
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
+  K --> L
+  L --> M
+--- `TurnPreflight.prepare` 捕获会话所有者和 Agent 快照，读历史。这些只捕获**一次**，下面没有任何地方再重新解析。
+flowchart TD
+  A["Turn 被接纳<br/>LocalAgentHost.run"]:::done
+  B["领取能力租约<br/>capability_acquisition"]:::done
+  C["TurnPreflight.prepare<br/>捕获会话、Agent 快照、历史"]:::on
+  D{"Registry 里有提前渲染的<br/>提示快照吗？take 的结果"}:::dim
+  E["沿用那份快照"]:::dim
+  F["source.capture 现拍一份"]:::dim
+  G["buildPrepared<br/>整套模板都从这一份快照读"]:::dim
+  H["loadPromptLayers<br/>项目指令 · 全局指令 · 记忆 · Skill 目录"]:::dim
+  I["buildSystemPrompt<br/>composePromptParts 拼成一个字符串"]:::dim
+  J["Object.freeze(agentConfig)<br/>system_prompt 冻住"]:::dim
+  K["assembleTurn<br/>扩展贡献前缀、工具、reminder"]:::dim
+  L["prepareRunnerInput<br/>系统提示 = 扩展前缀 + system_prompt<br/>用户消息 = reminder 前缀 + 用户原话"]:::dim
+  M["Pi Agent<br/>这个 Turn 的每次请求都用同一份"]:::dim
+  A --> B
+  B --> C
+  C --> D
+  D -->|有| E
+  D -->|没有| F
+  E --> G
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
+  K --> L
+  L --> M
+--- `internalTurnPromptReads.take(turnId)`：如果 `/goal` 续跑、`/review` 这类流程提前为这个 Turn 渲染过提示，就取走它留下的快照；没有，`buildPrepared` 里用 `source.capture()` 现拍。
+flowchart TD
+  A["Turn 被接纳<br/>LocalAgentHost.run"]:::done
+  B["领取能力租约<br/>capability_acquisition"]:::done
+  C["TurnPreflight.prepare<br/>捕获会话、Agent 快照、历史"]:::done
+  D{"Registry 里有提前渲染的<br/>提示快照吗？take 的结果"}:::on
+  E["沿用那份快照"]:::dim
+  F["source.capture 现拍一份"]:::on
+  G["buildPrepared<br/>整套模板都从这一份快照读"]:::dim
+  H["loadPromptLayers<br/>项目指令 · 全局指令 · 记忆 · Skill 目录"]:::dim
+  I["buildSystemPrompt<br/>composePromptParts 拼成一个字符串"]:::dim
+  J["Object.freeze(agentConfig)<br/>system_prompt 冻住"]:::dim
+  K["assembleTurn<br/>扩展贡献前缀、工具、reminder"]:::dim
+  L["prepareRunnerInput<br/>系统提示 = 扩展前缀 + system_prompt<br/>用户消息 = reminder 前缀 + 用户原话"]:::dim
+  M["Pi Agent<br/>这个 Turn 的每次请求都用同一份"]:::dim
+  A --> B
+  B --> C
+  C --> D
+  D -->|有| E
+  D -->|没有| F
+  E --> G
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
+  K --> L
+  L --> M
+--- `buildPrepared` 里整套模板读取和渲染，用的都是这同一份 `promptRead`。任何一次读取抛出 `PromptSnapshotInvalidError`，就整套改拍内置快照重来，不会拼出“新版加内置”的混合。
+flowchart TD
+  A["Turn 被接纳<br/>LocalAgentHost.run"]:::done
+  B["领取能力租约<br/>capability_acquisition"]:::done
+  C["TurnPreflight.prepare<br/>捕获会话、Agent 快照、历史"]:::done
+  D{"Registry 里有提前渲染的<br/>提示快照吗？take 的结果"}:::done
+  E["沿用那份快照"]:::done
+  F["source.capture 现拍一份"]:::done
+  G["buildPrepared<br/>整套模板都从这一份快照读"]:::on
+  H["loadPromptLayers<br/>项目指令 · 全局指令 · 记忆 · Skill 目录"]:::dim
+  I["buildSystemPrompt<br/>composePromptParts 拼成一个字符串"]:::dim
+  J["Object.freeze(agentConfig)<br/>system_prompt 冻住"]:::dim
+  K["assembleTurn<br/>扩展贡献前缀、工具、reminder"]:::dim
+  L["prepareRunnerInput<br/>系统提示 = 扩展前缀 + system_prompt<br/>用户消息 = reminder 前缀 + 用户原话"]:::dim
+  M["Pi Agent<br/>这个 Turn 的每次请求都用同一份"]:::dim
+  A --> B
+  B --> C
+  C --> D
+  D -->|有| E
+  D -->|没有| F
+  E --> G
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
+  K --> L
+  L --> M
+--- `loadPromptLayers` 读项目指令、全局指令、记忆和 Skill 目录；`buildSystemPrompt` 按固定顺序（身份、前言、全局、项目、环境、记忆、Skill 目录）交给 `composePromptParts` 拼成一个字符串。
+flowchart TD
+  A["Turn 被接纳<br/>LocalAgentHost.run"]:::done
+  B["领取能力租约<br/>capability_acquisition"]:::done
+  C["TurnPreflight.prepare<br/>捕获会话、Agent 快照、历史"]:::done
+  D{"Registry 里有提前渲染的<br/>提示快照吗？take 的结果"}:::done
+  E["沿用那份快照"]:::done
+  F["source.capture 现拍一份"]:::done
+  G["buildPrepared<br/>整套模板都从这一份快照读"]:::done
+  H["loadPromptLayers<br/>项目指令 · 全局指令 · 记忆 · Skill 目录"]:::on
+  I["buildSystemPrompt<br/>composePromptParts 拼成一个字符串"]:::on
+  J["Object.freeze(agentConfig)<br/>system_prompt 冻住"]:::dim
+  K["assembleTurn<br/>扩展贡献前缀、工具、reminder"]:::dim
+  L["prepareRunnerInput<br/>系统提示 = 扩展前缀 + system_prompt<br/>用户消息 = reminder 前缀 + 用户原话"]:::dim
+  M["Pi Agent<br/>这个 Turn 的每次请求都用同一份"]:::dim
+  A --> B
+  B --> C
+  C --> D
+  D -->|有| E
+  D -->|没有| F
+  E --> G
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
+  K --> L
+  L --> M
+--- `prepare` 的出口：`Object.freeze({ ...builtAgentConfig })`。系统提示字符串就在这个配置的 `system_prompt` 里，从这一刻起不再变。
+flowchart TD
+  A["Turn 被接纳<br/>LocalAgentHost.run"]:::done
+  B["领取能力租约<br/>capability_acquisition"]:::done
+  C["TurnPreflight.prepare<br/>捕获会话、Agent 快照、历史"]:::done
+  D{"Registry 里有提前渲染的<br/>提示快照吗？take 的结果"}:::done
+  E["沿用那份快照"]:::done
+  F["source.capture 现拍一份"]:::done
+  G["buildPrepared<br/>整套模板都从这一份快照读"]:::done
+  H["loadPromptLayers<br/>项目指令 · 全局指令 · 记忆 · Skill 目录"]:::done
+  I["buildSystemPrompt<br/>composePromptParts 拼成一个字符串"]:::done
+  J["Object.freeze(agentConfig)<br/>system_prompt 冻住"]:::on
+  K["assembleTurn<br/>扩展贡献前缀、工具、reminder"]:::dim
+  L["prepareRunnerInput<br/>系统提示 = 扩展前缀 + system_prompt<br/>用户消息 = reminder 前缀 + 用户原话"]:::dim
+  M["Pi Agent<br/>这个 Turn 的每次请求都用同一份"]:::dim
+  A --> B
+  B --> C
+  C --> D
+  D -->|有| E
+  D -->|没有| F
+  E --> G
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
+  K --> L
+  L --> M
+--- `assembleTurn` 让扩展贡献系统提示前缀、用户消息前缀和 reminder；`prepareRunnerInput` 拼出最终输入，交给 Pi 的 `Agent`。这个 Turn 的每一次模型请求，用的都是同一份系统提示。
+flowchart TD
+  A["Turn 被接纳<br/>LocalAgentHost.run"]:::done
+  B["领取能力租约<br/>capability_acquisition"]:::done
+  C["TurnPreflight.prepare<br/>捕获会话、Agent 快照、历史"]:::done
+  D{"Registry 里有提前渲染的<br/>提示快照吗？take 的结果"}:::done
+  E["沿用那份快照"]:::done
+  F["source.capture 现拍一份"]:::done
+  G["buildPrepared<br/>整套模板都从这一份快照读"]:::done
+  H["loadPromptLayers<br/>项目指令 · 全局指令 · 记忆 · Skill 目录"]:::done
+  I["buildSystemPrompt<br/>composePromptParts 拼成一个字符串"]:::done
+  J["Object.freeze(agentConfig)<br/>system_prompt 冻住"]:::done
+  K["assembleTurn<br/>扩展贡献前缀、工具、reminder"]:::on
+  L["prepareRunnerInput<br/>系统提示 = 扩展前缀 + system_prompt<br/>用户消息 = reminder 前缀 + 用户原话"]:::on
+  M["Pi Agent<br/>这个 Turn 的每次请求都用同一份"]:::on
+  A --> B
+  B --> C
+  C --> D
+  D -->|有| E
+  D -->|没有| F
+  E --> G
+  F --> G
+  G --> H
+  H --> I
+  I --> J
+  J --> K
+  K --> L
+  L --> M
+:::
+
 各种材料的来源和位置汇总如下，后面几节逐个打开：
 
 | 材料 | 来源 | 什么时候读 | 放在请求的哪里 |
@@ -186,7 +387,17 @@ PTC 那一行的依据在构造器的注释里：会话的工具调用模式“�
 
 对照 Pi 的做法，差别一目了然：
 
+::: tabs
+@@ Pi
 @pi packages/coding-agent/src/core/resource-loader.ts#loadContextFileFromDir
+每个目录里依次找几个名字，取第一个**存在**的，空文件也算。
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/agent-host/preparation/static-prompt-reader.ts#L120-L130 hl=124,127
+只看工作区根目录，第一个**非空**文件就返回，另一个不读，不合并。
+@@ host
+@code host/src/context.mjs#readProjectInstructions hl=170,174,175
+同样的规则：试到第一个非空文件，超过 32KB 才截断。
+:::
 
 Pi（v1.5.0，Learn Pi Agent 读的那一版）在每个目录里依次找 `AGENTS.override.md`、`AGENTS.md`、`CLAUDE.md` 这几个名字，取第一个**存在**的，空文件也算；然后从当前目录一路向上，把各层目录的文件按“全局、仓库根、子项目”的顺序合并。MiniMax 的取舍是：只看一个目录，空文件不算数，大小有硬上限。
 
@@ -303,6 +514,76 @@ sequenceDiagram
   P->>P: 用 S1 组装系统提示
 ```
 
+同一条时间线，一步一步走：
+
+::: steps 提前渲染的提示：Registry 怎样把快照交给 preflight
+--- `/goal` 续跑先渲染提示、后创建 Turn。它在提交之前先向 Registry `reserve` 一个名额：预留也算容量，已经预留或存在的编号不能再占。
+sequenceDiagram
+  participant G as /goal 续跑
+  participant R as Registry
+  participant S as 提示源
+  participant P as TurnPreflight
+  rect rgb(255, 237, 224)
+  G->>R: reserve(requestedTurnId)
+  end
+--- 从提示源 `capture()` 得到快照 S1，用 S1 渲染续跑提示。
+sequenceDiagram
+  participant G as /goal 续跑
+  participant R as Registry
+  participant S as 提示源
+  participant P as TurnPreflight
+  G->>R: reserve(requestedTurnId)
+  rect rgb(255, 237, 224)
+  G->>S: capture() 得到快照 S1
+  G->>G: 用 S1 渲染续跑提示
+  end
+--- `remember` 把 S1 存进 Registry，只能填入已有的预留。就在这时，一次刷新落地，提示源现在是 S2；而提示文字已经是用 S1 渲染的了。
+sequenceDiagram
+  participant G as /goal 续跑
+  participant R as Registry
+  participant S as 提示源
+  participant P as TurnPreflight
+  G->>R: reserve(requestedTurnId)
+  G->>S: capture() 得到快照 S1
+  G->>G: 用 S1 渲染续跑提示
+  rect rgb(255, 237, 224)
+  G->>R: remember(requestedTurnId, S1)
+  Note over S: 一次刷新落地，现在是 S2
+  end
+--- Turn 提交并被接纳，编号可能和占位时的不同，所以 `rebind` 把 S1 挪到新编号；目标编号已有条目或预留就拒绝。
+sequenceDiagram
+  participant G as /goal 续跑
+  participant R as Registry
+  participant S as 提示源
+  participant P as TurnPreflight
+  G->>R: reserve(requestedTurnId)
+  G->>S: capture() 得到快照 S1
+  G->>G: 用 S1 渲染续跑提示
+  G->>R: remember(requestedTurnId, S1)
+  Note over S: 一次刷新落地，现在是 S2
+  rect rgb(255, 237, 224)
+  G->>P: 提交 Turn，接纳后编号变成 turnId
+  G->>R: rebind(requestedTurnId, turnId)
+  end
+--- `TurnPreflight` 不重新 `capture()`（那样会拿到 S2，两代材料拼进一个请求），而是 `take(turnId)` 取走 S1，取出的同时删除。系统提示和续跑提示出自同一代。
+sequenceDiagram
+  participant G as /goal 续跑
+  participant R as Registry
+  participant S as 提示源
+  participant P as TurnPreflight
+  G->>R: reserve(requestedTurnId)
+  G->>S: capture() 得到快照 S1
+  G->>G: 用 S1 渲染续跑提示
+  G->>R: remember(requestedTurnId, S1)
+  Note over S: 一次刷新落地，现在是 S2
+  G->>P: 提交 Turn，接纳后编号变成 turnId
+  G->>R: rebind(requestedTurnId, turnId)
+  rect rgb(255, 237, 224)
+  P->>R: take(turnId) 得到 S1
+  P->>P: 用 S1 组装系统提示
+  end
+:::
+
 如果 preflight 重新 `capture()`，就会拿到 S2：提示是用 v1 渲染的，系统提示却是 v2 的，两代材料又拼到了一个请求里。Registry 的任务就是把 S1 递过去：
 
 @mm packages/agent-core/src/prompt-read.ts#L54-L101 hl=62-65,69-70,73-82,84-89,96-100
@@ -381,7 +662,14 @@ reminder 的设计也是同一种思路：把易变的东西从系统提示里�
 
 第 484～485 行：覆盖只对交互界面生效。第 488 行：覆盖提示和模板提示走同一条路 `addRuntimeRules`。第 489～499 行就是前面读过的那个顺序，一行一段。`preparePrompt` 在它外面做最后一步：
 
+::: tabs
+@@ MiniMax
+@mm packages/local-runtime-v2/src/service/turn-system/agent-host/preparation/local-agent-preparation-service.ts#L99-L116 hl=100,108,114
+`prepare` 的出口把配置冻住，系统提示就在 `system_prompt` 里。
+@@ host
 @code host/src/context.mjs#preparePrompt hl=549-556,558-566
+从传进来的快照读身份模板，返回的对象整个冻结。
+:::
 
 `templates.read(snapshot, "system")` 从传进来的快照读身份模板，返回的对象整个冻结（第 558 行起）。`system` 是分节数组，`text` 是拼好的字符串，`ranges` 是分账用的范围，`fingerprint` 是稳定性指纹。`memories` 参数和 `system` 数组都是第 5 章最初的接口，保持不变，`app.mjs` 和 `turns.mjs` 不用改。
 
