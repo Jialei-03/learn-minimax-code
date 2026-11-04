@@ -1,84 +1,380 @@
-## 本章的问题
+---
+motto: 更新不是去改正在用的东西，而是在旁边造一份新的、整体换上去；旧的那份，等最后一位使用者走了才拆。
+learn:
+  - 说清楚插件更新时为什么既不能原地改、也不能立刻关旧的，以及新旧两代怎样同时存在
+  - 读懂 `PluginCapabilityGenerationRegistry` 的租约、退休和清理顺序，区分 `release` 与 `dispose`
+  - 沿 `acquire`、`tryPublish`、`publishPreparedRuntime` 讲出：MCP 发现再慢为什么不挡 Turn，发布门挡谁、挡多久
+  - 讲出插件、Skill、MCP 服务器怎样从目录变成 Turn 抓到的一份冻结视图，以及插件 Skill 和独立 Skill 读取时机的差别
+  - 解释同一份 SKILL.md 为什么被三个读取器按“整包拒绝、逐个跳过、宽松推断”三种态度处理
+prereq: 第 2、4 章；Learn Pi Agent 第 11、12 章
+time: 90 分钟
+build: host/src/plugins.mjs 的 createPlugins（旁边备候选、关门提交、整体切换、按租约清理旧代）与 host/src/skills.mjs 的三种读取态度
+---
 
-Turn A 用 R1 的工具执行，更新后 B 应看到 R2。直接在 replace 时关掉 R1 会中断 A；永不关闭则泄漏资源。再加一个竞态：连接完成了，但 tools/list 还没发布，第一轮就捕获了空清单。
+你让 MiniMax Code 查一份内部文档。模型调用了插件 `docs-kit` 的 `search` 工具，工具背后是一个 MCP 服务器进程，一次搜索要三十秒。就在这三十秒里，插件被更新了：作者发布了新版，换了服务器的启动命令，`SKILL.md` 也改了几行。触发更新的可能是你在编辑器里保存了文件（目录监视器看到变化），也可能是一次安装、卸载、停用，或者后台同步。
 
-host 用 discovery Promise 作为捕获屏障，发现完成后才发布新 revision；旧能力代由真实上游 GenerationRegistry 计租约，最后一个使用者释放后才清理。
+三个问题马上摆在面前：
 
-## 沿固定源码逐段拆解
+1. 正在等搜索结果的这个 Turn 怎么办？它手里的工具连着旧的服务器进程。
+2. 更新完成之后才开始的 Turn，该看到什么？
+3. 旧的服务器进程什么时候可以退出？
 
-@source skills
+Pi 的答案最省事：不让更新发生。交互模式的 `/reload` 在模型还在输出时直接拒绝。
 
-### Skill 包内容先过读取与格式边界
+@pi packages/coding-agent/src/modes/interactive/interactive-mode.ts#L6532-L6540 hl=6533-6536
 
-parseSkillFrontmatter 要求起始和闭合块、mapping 形状，并拒绝重复键与过度 alias。格式错误应在读取包时被解释，不要等模型调用才变成模糊失败。host 使用更小的标量方言，明确不支持完整 YAML。
+这里引用的是 Learn Pi Agent 读的 v1.5.0。对一个终端里的单人单会话，拒绝足够了。MiniMax 要同时服务多个会话和后台任务，触发更新的常常是文件监视器或同步任务，没有人可以去提醒它“请等一等”。它选了另一个答案：**新旧两代同时存在**。新开始的 Turn 用新的一代，进行中的 Turn 继续用旧的一代，旧的一代等最后一个使用者走了才拆。
 
-@source mcp-generation
+这套机制全在 `local-runtime-v2/src/service/plugin-system/` 里（那个目录里搜不到对 `pi-coding-agent` 的引用，它不经过 Pi 的扩展加载器）。本章沿着一个插件走一遍：目录怎样变成 Turn 手里的一份冻结视图，新的一代怎样在旁边备好再整体换上，旧的一代由什么条件决定寿命；最后看 Skill 和 MCP 这两种内容各自的讲究。
 
-### retain 与 release 管正在使用的旧代
 
-构造时保存 current generation；retain 按 revision 增计数，缺代就报错；replace 创建新 current，把 prior 标 retired；release 递减并调用 tryCleanup。清理必须同时满足 retired、leaseCount 为零且还没开始。
+@figure assets/course/ch08-plugins.png 新旧两代同堂：进行中的 Turn 用旧的一代，等最后一个租约松开，旧架子才撤
 
-cleanup 先关闭 runtime，再跑该代 finalizers；失败隔离让其他收尾仍可继续。dispose 是系统级收尾，不能被单个 Turn 当作释放自己租约的替代。
+## 先看现象：旧进程该什么时候死
 
-### host 的发布屏障与租约分别解决什么
+先让三种做法在同一个剧本里各跑一遍：v1 服务器在线，Turn A 开始一次要 300ms 的搜索，50ms 后插件更新到 v2，Turn B 随后开始，A 的调用结束。服务器是真实的子进程，“旧进程退出了吗”是用进程号查出来的。
 
-capture 等待 pending discovery，解决新 Turn 捕获过早；retain/release 解决旧 Turn 仍在使用。前者不能代替后者。发现失败让当前捕获失败，下一次显式更新可以重新准备，不偷偷发布半成品。
+@lab node labs/ch08/policies.mjs | md
 
-Plugin、Skill、Hook、MCP 可以组合，但不能共享一个含糊的 ready 布尔值。每种能力需要明确发现、发布、执行和清理的条件。
+三行三种命运：
 
-## 机制总览
+- **替换时立刻关旧的**：B 没问题，A 的调用被打断，`RPC closed`。用户看到的是一次莫名其妙失败的搜索。
+- **替换时什么都不关**：两个 Turn 都正常，最后一列暴露了代价：A 早就结束了，v1 进程还活着。每更新一次多留一个进程。
+- **租约**：A 的调用完成，B 用新版本，v1 进程在 A 释放之后才退出。
+
+第三种做法的核心是**租约**：Turn 开始时登记一笔“我在用这一代”，结束时销账；一代的账全部销清，才轮到拆它。“一代”指某个时刻已经发布的全部插件能力（工具、Skill、Hook、子 Agent）加上撑着它们的运行时（比如 MCP 子进程）。下面三节回答三个问题：一代是什么样的数据，账记在哪里，新的一代怎样上位。
+
+## 一个插件怎样变成 Turn 手里的一份视图
+
+```mermaid
+flowchart TD
+  D["插件目录<br/>.minimax-plugin/plugin.json<br/>skills/*/SKILL.md · *.mcp.json · hooks · agents"]
+  U["安装 · 卸载 · 启停 · 官方同步"]
+  W["LocalPluginDirectoryWatcher<br/>目录变化，150ms 去抖后触发重建"]
+  R["包读取器<br/>格式不对的包或 Skill 在这里被拒绝"]
+  B["PluginSnapshotBuilder.build<br/>同步的纯计算：重名检查，产出冻结的 PluginSnapshot"]
+  P["preparePublication<br/>在旁边造候选 MCP 运行时，reconcile（连接、列工具）"]
+  S["publishPending<br/>commit，再 registry.replace，新一代成为 current"]
+  L["acquire<br/>Turn 开始：抓取当前代并 retain 租约"]
+  T["assembleTurn<br/>工具、Skill、Hook 都来自同一份视图"]
+  D --> W --> R --> B
+  U --> B
+  B --> P --> S --> L --> T
+```
+
+一个插件是一个目录，根下必须有 `.minimax-plugin/plugin.json`，清单里列出它带来的东西：`skills`、`mcpServers`、`hooks`、`apps`（连接器），至少有一项非空（`docs/plugins/README.md`）。MiniMax 也能读 Claude Code 和 Codex 格式的包（`compatibility-reader.ts`）。读取器把目录翻成类型化的包对象，然后交给 `PluginSnapshotBuilder`，它产出本章的主角：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin/runtime/snapshot-builder.ts#L152-L190 hl=153,173,175,181-184,186-188
+
+- **整份快照每一层都 `freeze`**。`build` 是同步的纯计算：输入读好的包，输出冻结的 `PluginSnapshot`，里面的 `turnCapabilities` 就是 Turn 将要抓取的“视图”（`AgentHostTurnCapabilityView` 的注释写得很直白：“captured for exactly one v2 execution”，只为一次执行抓取）。
+- **Skill 带着正文**（L175 的 `content` 是整个 `SKILL.md` 的文本）和位置（`location`）。名字是 `插件名:Skill 名`（L173），不会和独立 Skill 或别的插件撞名。视图一冻结，磁盘上的文件之后怎么改，这一代都不受影响。
+- **`runtimeTools: freeze([])` 是个空槽**（L181-L184 的注释：先把每个 Turn 的槽位冻住，之后的工具使用同一份快照，与提示和 Skill 读取一致）。MCP 工具要连上服务器才知道，等候选运行时 `reconcile` 完，`withPluginMcpRuntime` 返回**一份新的冻结快照**把槽填上，旧对象不会被改。
+- Hook、子 Agent 也在同一份视图里（L186-L188）。同一个 Turn 的提示、工具和 Hook 读的是同一个版本，不会出现“提示里有这个 Skill，工具表里却没有对应工具”。
+
+用户自己配置的 MCP 服务器（`mcp.json`）不在这套机制里：它们走 `LocalMcpService`，那个文件里搜不到 generation、lease、revision 这些词。插件的运行时注释也说得明白：它的连接池“deliberately separate”，和用户 `mcp.json` 的连接分开（`mcp/runtime.ts` L94-L96）。
+
+## 注册表：一代一个条目，两个数决定生死
+
+账记在 `PluginCapabilityGenerationRegistry` 里。它是纯代码，不依赖外部包，实验直接装载上游文件来跑：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/mcp/generation-registry.ts#L6-L53 hl=9-11,37,42-44,48-52
+
+- **一代的三个字段**（L9-L11）：`finalizers`（这一代死后要做的收尾）、`leaseCount`（几个 Turn 在用）、`retired`（是否已被新一代取代）。
+- **`retain` / `release`**（L29-L45）：借和还。借一个不存在的 revision 直接抛 `SNAPSHOT_GENERATION_MISSING`（L32-L35）；还的时候如果这一代已不在或租约已是 0，什么都不做（L42），所以重复释放无害，不会多还一份。还完立即 `tryCleanup`。
+- **`replace`**（L47-L53）：新一代成为 `current`，旧的标记 `retired`，新带来的 `finalize` 挂在**旧代**上（L51）。然后对旧代 `tryCleanup`：如果当时没有人在用，立刻就拆；否则等最后一个 `release`。
+
+什么时候真的拆？
+
+@mm packages/local-runtime-v2/src/service/plugin-system/mcp/generation-registry.ts#L81-L103 hl=82,98-102
+
+三个条件缺一不可（L82）：已退休、租约为零、清理还没开始（`cleanupTask` 防止并发的两次 `release` 各拆一遍）。拆的顺序在 L98-L102：**先关运行时，再依次跑 finalizer，最后把条目从表里删掉**。每一步都套了 `ignoreFailure`，运行时关不掉不会挡住 finalizer。把状态一步步走一遍：
+
+@lab node labs/ch08/registry.mjs | md
+
+第 3 步，更新发布 r2，r1 退休但还有两张租约，日志一片空白：什么都没拆。第 6 步，最后一张租约归还，日志里才出现 `close r1`，紧接着是 `finalize r1`，r1 从表里消失。第 7 步重复释放、第 8 步迟到的借用，都被干净地处理了。最后一步 `dispose()`：Turn C 还握着 r2 的租约，r2 照样被关掉。`dispose` 把所有代强制标成退休、租约清零再清理，是**系统级**的收尾，只能在应用停止接纳、等进行中的工作收尾之后调用（`PluginSystem.dispose` 就是这个顺序），绝不能当作单个 Turn 的 `release`。
+
+```mermaid
+stateDiagram-v2
+  [*] --> 当前: 创建
+  当前 --> 退休: replace 让新的一代上位
+  退休 --> 清理中: 租约归零，tryCleanup
+  当前 --> 清理中: dispose
+  退休 --> 清理中: dispose
+  清理中 --> 已销毁: close 运行时，跑 finalizer，删条目
+  已销毁 --> [*]
+```
+
+注册表还有一个容易让人误用的方法：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/mcp/generation-registry.ts#L55-L67 hl=56-57,61-64
+
+`replaceRevision` 只换标签，运行时不变，**新条目的租约从 0 开始**。实验的第二张表演示了后果：Turn A 借了 r1，标签被换成 r1b，租约从此不被任何一代记账；下一次 `replace` 把 r1b 当作“没人用的旧代”立刻拆掉，A 还在用的运行时被关了（第 3 步的日志 `close r1`）。这就是 `publishWithCurrentRuntime` 要在有租约时直接拒绝的原因，下面发布那一节会看到。**要有两代同时存在，就必须有两个运行时**；只有一个运行时的时候，只能等没有 Turn 再换。
+
+## 谁等谁：acquire 的临界区和发布门
+
+注册表只管账。Turn 怎样借到“当前代”，更新怎样把新一代放上去，由 `AgentHostTurnCapabilityLifecycle` 编排。它的类注释把目标说得很清楚：给每个被接纳的执行租一份能力快照，同时允许新的一代原子地发布给之后接纳的 Turn。三个角色的时序如下：Turn A 在更新前开始，Turn B 在候选还在发现时开始，Turn C 在发布门关着时开始。
 
 ```mermaid
 sequenceDiagram
   participant A as Turn A
-  participant G as GenerationRegistry
-  participant U as 插件更新
-  A->>G: retain R1
-  U->>G: replace R2
-  Note over G: R1 retired，但 lease 仍为 1
-  A->>G: release R1
-  G->>G: close R1 后运行 finalizers
-  Note over G: R2 继续作为 current
+  participant B as Turn B
+  participant C as Turn C
+  participant L as 生命周期<br/>acquire 与 tryPublish
+  participant U as 更新<br/>PluginSystem
+  participant G as 注册表
+  A->>L: acquire
+  L->>G: retain r1，租约 1
+  U->>U: 候选 r2 在旁边发现，连接和 tools/list
+  B->>L: acquire，发现仍在进行
+  L->>G: retain r1，租约 2
+  U->>L: tryPublish，commit 加切换
+  Note over L: 发布门关上
+  C->>L: acquire，在门口等待
+  U->>G: replace r2，r1 退休
+  Note over L: 发布门打开
+  L->>G: retain r2，给 C
+  A->>L: release，r1 租约 1
+  B->>L: release，r1 租约 0
+  G->>G: r1 退休且无租约，close，finalizer，删除
 ```
 
-## 接入贯穿项目
+先读 Turn 一侧：
 
-@implementation 08-plugins-mcp
+@mm packages/local-runtime-v2/src/service/turn-system/agent-host/assembly/turn-capability-lifecycle.ts#L172-L206 hl=182,185,187,189-194,201,204
 
-### 逐步跟踪本章实现
+- **L182-L187 是三次等待**。`waitUntilReady` 是插件系统自己的入场检查（稍后解释），`prepareTurnCapabilities` 现取这个 Turn 的连接器工具，`waitForPublication` 等发布门。
+- **L189-L194 是全章最关键的几行**。注释写着 “No await below this point”：读取当前代（`captureTurnCapabilities`）和加租约（`retainTurnCapabilities`）之间不能有任何 `await`。假如中间让出一次，一个更新可能恰好在这个间隙里发布 r2，r1 租约为零、立刻被清理：`retain` 要么抛 `SNAPSHOT_GENERATION_MISSING`，要么租到一个已经被关掉的运行时。把两步放进同一段同步代码，这个竞态就不存在了。
+- **L201 登记在途 Turn，L204 把 `release` 交给调用者**。`LocalAgentHost.run` 在 `finally` 里调用它（`local-agent-host.ts` L276-L278），成败都会还租约。
 
-update 把 discovery 串在 pending 后，先等新 runtime 完成发现，才发布 revision。capture 也等待同一 barrier，再 retain 当前 generation，避免拿到新版本号配旧目录。发现失败会阻止这次 capture；显式下一次 update 可以重新尝试。
+再读发布一侧：
 
-发布 R2 时，已经 capture R1 的 Turn 继续持有它的 tools 与 runtime。release 只释放那份租约，归零后旧 runtime 才 close。finalizer 捕获的是 retired revision，不能闭包引用会继续变化的 current，否则晚到的清理可能删掉新视图。
+@mm packages/local-runtime-v2/src/service/turn-system/agent-host/assembly/turn-capability-lifecycle.ts#L208-L233 hl=209-213,217-220,225,230-231
 
-mcpRuntime 真正启动 stdio peer，完成握手和 list 后把目录变成 configured tools。调用错误映射为工具 isError，初始化失败则关闭进程。课程同时验证 registry 状态和真实 peer 生命周期：只有引用数变化而子进程仍泄漏，不能算热更新验收通过。
+- **`release`**（L208-L214）只对登记过的 Turn 生效一次，还完租约；若在途 Turn 数降到 0，通知 `onHostIdle`，让积压的发布再试。
+- **`waitForPublication` 是个循环**（L216-L222）：门开了之后可能又有新的发布把门关上，所以每次醒来都要重新看。
+- **`tryPublish`**（L224-L233）：门已经关着就返回 `undefined`，调用者稍后重试；否则**先把门装好**（L230），**再放行**发布函数（L231，`runPublication` 要等这个信号才开始跑）。门在发布函数的第一行执行之前就已经就位。门在发布完成或失败后都会打开（`settlePublication`）。
 
-## 运行本章实验
+注意发布门**不检查有没有 Turn 在跑**。在跑的 Turn 已经持有旧代的租约，门挡不到它们；门只挡“正在入场的新 Turn”，为的是不让它们抓到一个正在被换掉的视图。
 
-```bash
-node --disable-warning=ExperimentalWarning labs/chapters/08-plugins-mcp.mjs
-```
+还有一个入场前的等待：
 
-@experiment 08-plugins-mcp
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin/runtime/local-directory-watcher.ts#L64-L72 hl=69-71
 
-## 逐项解释实验结果
+`waitUntilReady`（`plugin-system.ts` L260-L273）会调用这个 `whenIdle`。注释交代了原因：刚用 Plugin Creator 写好一个插件、立刻发起的 Turn，应该看得到它。目录一变，监视器在去抖（默认 150ms）后触发重建，`whenIdle` 就等这次重建结束，**最多等 20 秒**（`DEFAULT_ADMISSION_WAIT_TIMEOUT_MS`），超时不再等。冷启动时恢复缓存也有同样的 20 秒上限（`contracts.ts` 里 `cacheRestoreAdmissionTimeoutMs` 的注释）。三种等待放在一起：
 
-真实 MCP fixture 的发现被人为挂起，capture 必须等待。R2 发布后，新的快照能立即调用 mcp_echo，旧快照仍保留 old；R1 直到 release 才关闭，重复 release 不会再次关闭。
+| 等什么 | 谁在等 | 等多久 | 为什么 |
+| --- | --- | --- | --- |
+| 本地目录的重建、冷启动的缓存恢复 | `waitUntilReady` | 各最多 20 秒 | 刚改完插件就开始的 Turn 应该看到改动 |
+| 发布门（commit 加切换） | `waitForPublication` | commit 多久就等多久 | 不让新 Turn 抓到正在被换掉的视图 |
+| MCP 发现（连接、`tools/list`） | 没有人等 | 零 | 它在候选里，旁边完成；旧代继续服务 |
 
-实验执行了完整上游 generation 及其纯依赖；发现屏障和 host 编排是原创教学层，不把它写成已经向上游修复的证据。
+最后一行是下一节的主题。先用真实的生命周期把这个剧本跑一遍。迷你的 PluginSystem 只有二十行（`tryPublish` 发布、`registry.replace` 换代），生命周期和注册表都是上游代码：
 
-## 继续动手与验收
+@lab node labs/ch08/gate.mjs | md
 
-同时持有两个 R1 lease，只释放一个时断言连接存活。让 close 延迟，再检查该代 finalizer 在 close 之后。最后取消 discovery，定义下一次更新怎样恢复。
+对着时序图读表：第 3 行，B 在发现进行中到达，直接拿到 r1，没被挡，租约变成 2。第 6 行，C 在发布门关着时到达；第 7 行 commit 完成；第 8 行 C 才返回，拿到的是 r2。第 10 行，B 释放了 r1 的最后一张租约，r1 的运行时 `close()` 紧跟着出现（第 11 行），然后才是 finalizer（第 12 行）。第 13 行，C 释放 r2：r2 是当前代，不会被清理，直到应用关闭才被 `dispose`。
 
-::: interview 更新插件时为什么不能立即关闭全部旧连接？
-先完成 discovery 再发布 R2，新 Turn 等 barrier 后捕获它；已持有 R1 lease 的任务继续使用旧 runtime。引用归零才清理旧资源，finalizer 必须绑定被退休的版本。真实 MCP 退出是资源回收的直接证据。
+## 候选在旁边备好：准备慢，切换快
+
+发布分两段。**准备**可以很慢，也会失败，所以放在旁边做，不占门：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/publication.ts#L323-L369 hl=325,327,332-335,336-337,338-343,364-368
+
+- **L325 造一个全新的运行时**（`factory`），它有自己的连接池。**L327 把当前运行时已经成功的 `tools/list` 结果抄过来**（`seedCandidateInventory`）：没变的服务器继承现成的清单，不必重新发现。
+- **L332-L335 `reconcile`**：把新快照里的服务器声明对齐到候选运行时，拿回工具清单。这是慢的部分，期间旧代照常服务，生命周期的门没关。
+- **L336-L337** 回来之后先检查有没有被中止、有没有被更新的发布取代。
+- **L338-L343 `withPluginMcpRuntime`**：把工具填进快照的空槽，得到一份新的冻结快照。
+- **L364-L368 任何一步失败，都关掉候选**。当前代一直没被碰过，失败的更新对正在用的人没有任何影响。
+
+准备好之后才进发布门：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin-system.ts#L1052-L1069 hl=1053-1054,1055-1057,1065-1069
+
+`publishPending` 先 `prepare()`，再检查“栅栏”（`assertPluginPublicationFence`：发布期间账号作用域变了就中止），然后采用候选运行时。不管哪一步抛出，`catch` 都会关掉**还没被采用**的候选，并执行 `rollback`。采用的步骤是：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin-system.ts#L1100-L1131 hl=1106-1117,1125-1130
+
+- **先 `commit`**（L1106）：写数据库、搬目录这类持久的改动，门关着，新 Turn 在等。
+- **再切换**（L1108-L1116）：`this.mcpRuntime`、`this.snapshot` 和 `capabilityGenerations.replace` 在同一段同步代码里完成。外面的人要么看到旧代，要么看到新代，看不到一半。`finalize` 在这里交给 `replace`，挂在旧代上。
+- **L1125-L1130 是前面那个警告的出处**：没有 MCP 运行时工厂、只能复用当前运行时的路径，只要有任何租约（`currentLeaseCount > 0`）就拒绝发布，因为那条路用的是 `replaceRevision`，会丢租约。生产环境始终提供工厂（`initialize.ts` 的 `mcpRuntimeFactory: createPluginMcpRuntime`），每次发布都走隔离路径。
+
+`finalize` 有一个很具体的用途：卸载。
+
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin-system.ts#L492-L507 hl=495-498,499-505,506
+
+卸载不是立刻 `rm -rf`。`commit` 先 `stageAcceptedLocalRoot`，把插件目录挪进数据目录下的隔离区（`package-storage.ts` 里的实现是一次 `rename`）；任何一步失败，`rollback` 用 `restore()` 把它挪回来；**真正的删除 `discard()` 放在 `finalize`**，等旧代的运行时关掉之后才执行。为什么要等？这是我的推断：旧代的 MCP 子进程可能还占着那个目录，进程退出之前删除，在 Windows 上会失败。从代码上能确认的是顺序：`commit` 可撤销，`finalize` 不可撤销，不可撤销的那一步放在最后。实验用 host 的同名机制把一次升级和一次卸载走了一遍：
+
+@lab node labs/ch08/frozen.mjs | md
+
+第一张表：更新之后，Turn A（r1）读到的 Skill 正文和 `search` 的回答还是 v1，Turn B（r2）是 v2，独立 Skill 当场去读文件，也是 v2。第二张表：卸载提交后目录已经不在原处，隔离区在，但 Turn B 手里的 Skill 正文（冻结在内存里）和它的 `search` 工具（进程还活着）都照常工作；B 释放租约之后，进程退出，隔离区才被删。
+
+## MCP：运行时、名字和“预热中”
+
+一代里的 MCP 部分是 `PluginMcpRuntime`。它有两个性质决定了“旧代还能用”：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/mcp/runtime.ts#L118-L130 hl=118-130
+
+每个 `PluginMcpRuntime` 在构造时造一个自己的 `McpConnectionPool`；而它生成的工具是闭包，调用时用的是**生成它的那个运行时的池**：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/mcp/runtime.ts#L380-L392 hl=383,386-387
+
+`this.pool.callTool(...)` 里的 `this` 是造出这个工具的运行时。所以旧代的工具表在新代发布之后仍然指向旧代的连接，直到旧代被拆。这是“两代同堂”能成立的底层原因：每代自带资源，互不借用。池的连接是惰性的（连接池头部注释：lazily spawned on first call，空闲 15 分钟清理），`reconcile` 里列工具会触发连接。
+
+发现分三档，由 `inventoryMode` 决定：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/mcp/runtime.ts#L154-L174 hl=155-157,162-170
+
+- `discover`：真正联网 `tools/list`（超时 15 秒），失败的服务器记 `MCP_SERVER_LIST_FAILED`。
+- `cached-only`：不碰网络，只用已经缓存的清单；没有缓存的服务器记 `MCP_SERVER_WARMING`（预热中），这一代里它暂时没有工具。
+- `discover-managed`：只对宿主托管的服务器联网，给小程序一类的发布参与者用。
+
+所以一次本地改动的流程是**两段发布**。目录变化触发的重建用的是 `cached-only`：很快发布出一代，新插件的 Skill 立刻可用，新服务器显示“预热中”。有失败的服务器时，决定下一步的是这个函数：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/publication.ts#L767-L785 hl=773-775,784
+
+`cached-only` 且有失败的服务器，`next` 就是 `'immediate'`：发布成功之后，`PluginMcpDiscoveryScheduler` 立刻在后台用 `discover` 模式再准备一个候选，**发布成第二代**，这一代带着工具。发现失败则按退避重试，间隔默认 10 秒、30 秒、60 秒、120 秒、300 秒（`DEFAULT_MCP_DISCOVERY_DELAYS_MS`）。落到使用者身上：**在两代之间开始的 Turn 有这个插件的 Skill，没有它的 MCP 工具，下一个 Turn 才有**。MiniMax 用“第一个 Turn 缺工具”换来了“入场不被一个慢的 MCP 服务器拖住”。
+
+host 里没有第二段，因为后台发现就是再调用一次 `update`。
+
+模型看到的工具名也有讲究。MCP 服务器和工具的原名里可能有空格、中文、斜杠，而模型接口只接受规整的名字：
+
+@lab node labs/ch08/names.mjs | md
+
+真实函数 `buildMcpToolRuntimeName` 的输出：非法字符变下划线，整体限长 80（服务器段最多 48）。两个中文名的服务器全被洗成了 `server`，撞了名：函数只负责洗，唯一性由上层的 `McpNameRegistry` 按服务器身份分配。顺带一个对照：Pi 的 MCP 扩展收到 `notifications/tools/list_changed` 就地重新注册工具（掉了的标成 hidden，因为工具不能反注册）；而 MiniMax 公开源码的 `packages` 里搜不到 `list_changed` 的处理，工具表只在**发布新一代**时变化，Turn 手里的永远不动。
+
+## Skill：同一个 SKILL.md，三种态度
+
+Skill 有两个来源，走同一个 `skill` 工具。读取器的顺序是：
+
+@mm packages/local-runtime/src/api/local-native-tools.ts#L141-L191 hl=146,166-172,173-183,184-190
+
+先在**独立 Skill**里按名字查（L146 的 `readSkillByName`：用户目录、项目目录、内置 Skill，调用那一刻查）；查不到，再去 `input.desktopCapabilities.skills`（L173）找，那是**这个 Turn 抓到的视图**里的插件 Skill。这决定了两种 Skill 的更新语义不同：独立 Skill 改完，正在跑的 Turn 下一次调用就能读到；插件 Skill 随代冻结，Turn 用到的永远是它开始时那一代的正文（前面 frozen 实验的第一张表就是这个差别）。插件 Skill 的名字是 `插件名:Skill 名`，再加上建快照时的重名检查：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin/runtime/snapshot-builder.ts#L509-L529 hl=513-522
+
+和独立 Skill 或同一包里已有的名字重了，**后来者被跳过，记一条诊断**（`OFFICIAL_SKILL_NAME_CONFLICT` 或 `LOCAL_SKILL_NAME_CONFLICT`），不会悄悄覆盖。独立 Skill 和用户配置的 MCP 服务器名还会在建快照之前先“占位”（`createPluginNameReservations`），插件抢不走。
+
+SKILL.md 怎么读？先看插件包一路的解析函数：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/skill/frontmatter.ts#L1-L49 hl=9,14,20,35,44
+
+- **开头和结尾的 `---` 各占一行**（L9、L14），少了就是格式错误。
+- **frontmatter 必须是个映射**（L20），不是列表也不是标量。
+- **`parseDocument(..., { uniqueKeys: true })`**（L35）：键重复算错误。`yaml` 库默认也会报 `DUPLICATE_KEY`，但它的输出里后写的值会盖掉前面的；在 SKILL.md 里 `name` 写了两次，你以为用的是哪个，模型看到的是哪个，就没人说得清。
+- **`toJS({ maxAliasCount: 20 })`**（L44）：YAML 的别名可以层层展开成指数级的数据（一个“别名炸弹”），上限 20 把它挡在门外。
+
+`reader.ts` 在解析之后加规则：`description` 必填，`name` 缺省时用目录名，`expectedName` 给出时必须和目录一致。同一个 `readPluginSkill` 被几个读取器调用，格式不对时它们的**态度**不一样：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin/package/minimax-reader.ts#L94-L101 hl=96-99
+
+官方格式的包：每个 Skill 都带着 `expectedName`，放在一个 `Promise.all` 里，**任何一个抛出，整个包读取失败**。下面这个是 Agent Skills 风格的包：
+
+@mm packages/local-runtime-v2/src/service/plugin-system/plugin/package/agent-plugin-reader.ts#L182-L204 hl=186,191-197,199-202
+
+这里每个 Skill 单独 `try`：`PluginReaderError` 被接住，记成一条诊断（`code`、哪个 Skill），**循环继续**，其余的 Skill 照常收录（L191-L197 还加了规范里的名字和长度上限）。第三个读取器读的是用户自己的目录：
+
+@mm packages/agent-modules/skills/src/registry.ts#L675-L712 hl=681-683,685-702,703-711
+
+`parseSkillFile` 从不拒绝：标题缺了用第一个 `# 标题`，描述缺了取正文第一段，名字缺了取目录名（L681-L683）；缺的东西记成 `missing_title`、`missing_description` 警告（L685-L702）；只有连名字都推不出来才记 `missing_name` 错误并丢弃（L703-L711）。它用的 `js-yaml` 遇到重复键会抛异常，该文件的 `parseFrontmatter` 接住这个异常：
+
+@mm packages/agent-modules/skills/src/registry.ts#L891-L903 hl=893,895-902
+
+记成 `frontmatter_invalid_yaml` 警告，frontmatter 当作没有（L902），继续用目录名和正文。
+
+三种态度为什么不同？看谁来修、修得了吗。官方包经过审核，格式不对说明发布流程出了问题，整包拒绝，不上线“半个插件”；别人写的 Agent Skills 包，一个 Skill 坏了不该连累其它；用户自己的目录，宁可宽容，让它以目录名出现并附一条警告，也不让一个文件凭空消失，用户还要猜为什么。host 的 `Skills` 用一个 `policy` 参数复现这三种态度，规则是共用的，只有失败时的反应不同。同一批输入跑一遍：
+
+@lab node labs/ch08/frontmatter.mjs | md
+
+“name 写了两次”这一行最说明问题：严格模式直接拒绝；跳过模式只丢这一个；宽松模式收录为目录名 `summarize`，描述取自正文第一段，并附 `frontmatter_invalid` 诊断。“name 和目录名不同”一行：宽松模式信 frontmatter 里的名字（`summary`），另两种模式认目录名并拒绝。
+
+## 对照：Pi、Claude Code、MiniMax
+
+| | Pi | Claude Code | MiniMax Code |
+| --- | --- | --- | --- |
+| 谁触发更新 | 用户 `/reload` | 用户 `/reload-plugins`；交互模式只弹通知，由用户自己运行 | 目录监视器（去抖）、安装、卸载、启停、官方同步 |
+| 更新时正在跑的任务 | 拒绝重载（`isStreaming` 时提示等待） | `refreshActivePlugins` 原地替换状态里的插件、命令、Agent 定义，并让 `mcp.pluginReconnectKey` 加一，MCP 连接管理器据此重新连接 | 新旧两代并存，每个 Turn 持有自己那一代的租约 |
+| 旧资源的寿命 | `reload` 先让旧的扩展运行器失效，再重建 | 重载时立刻断开已过期的 MCP 连接（`excludeStalePluginClients`，对已连接的调用 `clearServerCache`），没有租约 | 最后一个租约释放：先 close 运行时，再跑 finalizer |
+| MCP 工具表变化 | 收到 `list_changed` 就地重注册 | 随重连刷新 | 只在发布新一代时变化 |
+| Skill | 扫目录，系统提示放目录，模型用 `read` 读全文（没有专门的 Skill 工具） | 有专门的 Skill 工具 | `skill` 工具；独立 Skill 当场读，插件 Skill 随代冻结 |
+
+Claude Code 一列来自 `utils/plugins/refresh.ts` 的头部注释和 `refreshActivePlugins` 的实现；它是“交互式的单用户 CLI”这个场景下的选择，更新由用户明确触发，状态原地换。MiniMax 同时服务多个会话和机器触发的更新，代价是整套租约、门、两阶段发布的复杂度。收益是更新永远不会打断别人的 Turn。
+
+## 动手：host 里的 createPlugins
+
+`host/src/plugins.mjs` 把上面几处压成一个 `createPlugins()`，API 和之前一样：`update`、`capture`、`close`。租约用的是**真实的** `PluginCapabilityGenerationRegistry`（装载上游文件，不重写）；门、临界区、旁边备候选、提交与切换是 host 自己的实现。先看更新：
+
+@code host/src/plugins.mjs#applyUpdate hl=98,101,104-109,110-115
+
+`discover()`（L98）在旁边准备候选，期间 `currentView` 不动，所以新来的 `capture` 照常拿到旧代。准备成功才关门（L101），`commit`、切换、`registry.replace` 在门里完成；`finalize` 交给 `replace`，挂在旧代上。任何一步抛出，`catch` 关掉候选、执行 `rollback`（`commit` 可能只做了一半，所以 `rollback` 要能空转）。再看抓取：
+
+@code host/src/plugins.mjs#capture hl=138,141-142
+
+等门是个循环；读 `currentView` 和 `registry.retain` 之间没有 `await`。`release` 只生效一次。冻结用 `Object.freeze` 做在 `freezeView` 里：插件 Skill 的运行时名字就是在那里调用真实的 `buildPluginSkillRuntimeName` 生成的。
+
+简化的地方：revision 由调用者给（MiniMax 自己数 `plugin-snapshot-N`）并拒绝重复；两阶段发布被压成“调用者准备候选，host 发布”；没有文件监视器、官方同步和账号作用域。和真实实现是否一致，不靠想，直接比较：同一个三 Turn 一次更新的剧本，host 的 `createPlugins` 对真实的 `AgentHostTurnCapabilityLifecycle` 各跑一遍，逐行对照：
+
+@lab node labs/ch08/compare.mjs | md
+
+十五行事件（含各个关闭和 finalizer 的顺序）全部一致。回归实验 `node labs/chapters/08-plugins-mcp.mjs` 在此之上补了几条失败路径：发现失败时当前代原样保留，`commit` 失败时候选被关掉、`rollback` 被调用、发布门重新打开，关闭时正在发现的候选（一个真实的 MCP 进程）也会被关掉，不留孤儿进程。
+
+Skill 的三种态度在 `host/src/skills.mjs`：
+
+@code host/src/skills.mjs#Skills collapse=true
+
+`policy` 取 `strict`（默认，和以前一样）、`skip`、`lenient`。`load(name)` 每次都重新读文件，所以独立 Skill 总是当场的内容；插件 Skill 不走这里，它的正文在 `capture()` 返回的视图里，随那一代冻结。
+
+## 你来改
+
+::: predict 去掉发布门
+把 `host/src/plugins.mjs` 里 `capture` 的 `while (gate) await gate;` 删掉，运行 `node labs/chapters/08-plugins-mcp.mjs`。哪几项检查会失败？这个改动在真实产品里会造成什么问题？
+???
+“commit 进行中：capture 在门口等着”和“事件顺序一致”会失败：Turn C 在 commit 期间到达，不再等门，直接抓到 r1。看起来无害（r1 本来就是当前代），但 commit 做的是持久改动：比如卸载把目录挪进隔离区。C 是在目录已经被挪走之后才开始的，却抓了一份指向旧目录的视图，它的 Skill 位置和以后的文件读取都落空。门的作用是不让新 Turn 在“磁盘已改、内存未换”的中间状态入场；已经在跑的 Turn 不受影响，它们早就持有自己的租约。
 :::
 
-::: interview 发现屏障和 generation lease 能互相替代吗？
-不能。前者保证新 Turn 捕获前发现已完成；后者保证旧 Turn 结束前资源仍存活。它们分别约束准备时序与资源寿命。
+::: predict 先 commit，后发现
+把 `applyUpdate` 里 `await commit?.()` 挪到 `const candidate = await discover()` 之前，写一个 `discover` 抛出错误、`commit` 记日志、`rollback` 记日志的更新。日志里会有什么？
+???
+只有 `commit`，没有 `rollback`。`discover` 在 `try` 之外，它的失败不会触发 `catch`，所以已经做过的 `commit` 没有人撤销：磁盘上的状态变了，内存里的代没变，两边对不上。MiniMax 的顺序是**先在旁边把候选准备好**（`prepareIsolatedPluginPublication`），确认能用，才进入发布门做 `commit`，不可撤销或难撤销的改动离“失败可能发生”的地方越远越好。
 :::
 
-::: interview 为什么不能在一个任务 finally 里 dispose 整个插件系统？
-系统还可能服务其他 Turn。单个任务只释放自己的 lease；系统 dispose 应在应用停止接纳并等待活动工作收尾之后进行。
+::: predict 忘了 release
+把 `labs/ch08/scenarios.mjs` 的 `updatePolicies` 里 `a.release()` 删掉，再运行 `node labs/ch08/policies.mjs`。“租约”那一行的最后一列是什么？v1 进程会一直活着吗？
+???
+最后一列变成“仍在运行（泄漏）”：A 的账没销，v1 一直是退休却有租约的状态，不会被拆。但不会永远活着：`finally` 里的 `host.close()` 调用 `registry.dispose()`，把所有租约清零并强制清理。所以泄漏的上限是应用的寿命。MiniMax 防的是同一件事：`acquire` 和 `release` 成对出现在 `LocalAgentHost.run` 的 `try ... finally` 里，成功、失败、取消都会还账。
+:::
+
+## 面试题
+
+::: interview 插件或 MCP 服务器更新时，为什么不能直接关掉旧连接？怎么设计才对？
+旧连接可能正被一个进行中的 Turn 使用：直接关会打断它的工具调用；不关则每次更新泄漏一个进程。正确的设计是让**新旧两代同时存在**：每一代自带资源（连接池、子进程），每个 Turn 开始时抓取当前代并登记租约，结束时释放；旧代退休后，等租约归零才关闭运行时、再执行收尾（finalizer）。
+
+MiniMax 的做法：`PluginCapabilityGenerationRegistry` 记账（`retain`/`release`/`replace`），清理要求“已退休、租约为零、清理未开始”三条件同时成立，顺序是先 `close` 运行时、再跑 finalizer、最后删条目。加分点：能说出为什么必须两个运行时（`replaceRevision` 会丢租约，所以有租约时 `publishWithCurrentRuntime` 直接拒绝），以及 `release`（Turn 只还自己那份租约）与 `dispose`（系统级强制清理，应用停止接纳、等进行中的工作收尾之后才调用，绝不能放进某个 Turn 的 `finally`）的区别；还有 Pi 用“流式输出时拒绝 `/reload`”换取简单，MiniMax 因为有机器触发的更新和多会话，不能这样。
+:::
+
+::: interview Turn 抓取能力快照时，为什么“读取当前代”和“加租约”必须在同一个同步临界区？
+如果两步之间有 `await`，一个更新可以在间隙里发布新一代，旧代租约为零，被立刻清理：随后的 `retain` 要么抛出 `SNAPSHOT_GENERATION_MISSING`，要么租到一个运行时已经被关掉的代，Turn 的工具全部失效。`AgentHostTurnCapabilityLifecycle.acquire` 的做法是把所有 `await`（等插件就绪、现取连接器工具、等发布门）放在前面，`captureTurnCapabilities` 和 `retainTurnCapabilities` 以及登记在途 Turn 放进一段没有 `await` 的同步代码，源码注释就是 “No await below this point”。这是 JavaScript 单线程模型下实现原子性的常规手法，加分点是能说出发布一侧也有对应的做法：`tryPublish` 在放行发布函数之前先把门装好。
+:::
+
+::: interview MCP 发现很慢时，MiniMax 怎样避免拖住新 Turn？代价是什么？
+把“发现”和“发布”分开。候选运行时在旁边 `reconcile`，期间旧代照常服务，发布门不关，新 Turn 不等发现。只有发布本身（`commit` 加切换，一段同步代码）才占发布门。目录变化触发的重建用 `cached-only` 模式，不碰网络，没有缓存的服务器标 `MCP_SERVER_WARMING`，先发布一代；随后调度器在后台用 `discover` 模式再发布第二代，失败则按 10/30/60/120/300 秒退避重试。
+
+代价是中间那一段：在两代之间开始的 Turn 有这个插件的 Skill 而没有它的 MCP 工具，下一个 Turn 才有。MiniMax 接受这个代价，宁可第一个 Turn 缺工具，也不让入场被一个慢的服务器拖住。入场仍有两处有上限的等待：本地目录重建和冷启动缓存恢复，各最多 20 秒。
+:::
+
+::: interview 同一份 SKILL.md，为什么 MiniMax 有三个读取器、三种失败态度？
+看谁来修、修得了吗。官方插件包经过审核发布，Skill 格式不对说明发布环节出了问题，`Promise.all` 里任何一个抛出，整个包被拒绝，不让“半个插件”上线。第三方的 Agent Skills 包，每个 Skill 单独 `try`，坏的记诊断并跳过，不连累其余。用户自己的 Skill 目录，`parseSkillFile` 从不拒绝：名字退回目录名、描述退回正文第一段，问题记成警告，因为用户宁可看到一个带警告的 Skill，也不愿意一个文件凭空消失。
+
+共同点是格式规则：frontmatter 必须闭合、必须是映射、键不许重复（`uniqueKeys`）、别名展开有上限（`maxAliasCount: 20`）。加分点：能说出重复键为什么危险（YAML 库默认让后写的覆盖先写的，你以为用的和模型看到的可能不是同一个）。
+:::
+
+::: interview 插件 Skill 和独立 Skill 的更新语义有什么不同？为什么这样设计？
+`skill` 工具先在独立 Skill 里按名字查（调用那一刻去 Skill 服务里查，改完立刻可见），查不到才去这个 Turn 抓到的视图里找插件 Skill。视图是冻结的，包含 `SKILL.md` 的整份正文，所以一个 Turn 从开始到结束看到的插件 Skill 是同一个版本，即使插件在中途更新。
+
+好处是一致性：同一个 Turn 里提示、Skill、工具、Hook 来自同一代，不会出现提示里引用了新版 Skill 的步骤、工具表里却是旧版工具。代价是更新对已经开始的 Turn 不生效，要等下一个 Turn。独立 Skill 是用户自己随手改的文件，立即可见更符合预期。名字上，插件 Skill 是 `插件名:Skill 名`，重名的后来者被跳过并记诊断，不会覆盖独立 Skill。
+:::
+
+::: interview 把 Pi 的 `/reload`、Claude Code 的 `/reload-plugins` 和 MiniMax 的做法放在一起比较，各自适合什么场景？
+Pi：流式输出和压缩时拒绝重载，其余时候原地重建扩展运行器。极简，适合单人单会话的终端。Claude Code：`refreshActivePlugins` 在运行中的会话里原地替换插件、命令、Agent 定义，并通过 `pluginReconnectKey` 触发 MCP 重连，由用户显式运行 `/reload-plugins`，交互模式只提示。适合“更新由用户触发”的 CLI。
+
+MiniMax：更新由目录监视器、安装卸载和同步触发，同一时刻可能有多个会话和后台任务在跑，所以采用“多代并存加租约”：每代自带资源，Turn 持租约，旧代等租约归零，新 Turn 在发布门之后入场。代价是复杂度（注册表、门、两阶段发布、finalizer），收益是更新永远不会打断别人的 Turn，也不泄漏进程。回答时要说出选择的依据是“谁触发更新、有没有人可以等”，而不是哪个更先进。
 :::

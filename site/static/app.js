@@ -175,3 +175,20 @@ function renderLessonDiagrams() {
 if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', renderLessonDiagrams);
 else renderLessonDiagrams();
 document.querySelector('.theme-toggle')?.addEventListener('click', renderLessonDiagrams);
+
+// 点击图示放大查看（复杂的流程图在正文栏里字太小）
+document.addEventListener('click', event => {
+  const figure = event.target.closest('figure.diagram, figure.lesson-diagram');
+  if (!figure || event.target.closest('a, button')) return;
+  const svg = figure.querySelector('svg');
+  if (!svg) return;
+  const overlay = document.createElement('div');
+  overlay.className = 'diagram-zoom';
+  overlay.innerHTML = '<div><p>点击任意位置或按 Esc 关闭</p></div>';
+  overlay.firstChild.appendChild(svg.cloneNode(true));
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = e => { if (e.key === 'Escape') close(); };
+  overlay.addEventListener('click', close);
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(overlay);
+});

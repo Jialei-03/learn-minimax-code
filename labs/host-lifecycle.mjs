@@ -1,3 +1,6 @@
+// 上一版的“合成端口”总装：用真实的上游注册表和 SDK 折叠器，配上合成事件和内存 IO。
+// 第 12 章现在跑的是 host 的真实应用（labs/ch12/scenarios.mjs：真子进程、真日志），本文件只作为
+// `npm run lab -- capstone` 的对照保留，正文不再引用。
 // A course-owned host, not MiniMax's production host. Compose real pinned
 // upstream registries/SDK accumulator with synthetic events and in-memory IO.
 import assert from 'node:assert/strict';
